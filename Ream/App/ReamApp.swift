@@ -13,7 +13,7 @@ struct ReamApp: App {
 
     var body: some Scene {
         DocumentGroup(viewing: PDFReferenceDocument.self) { file in
-            PDFDocumentView(document: file.document)
+            PDFDocumentView(document: file.document, fileURL: file.fileURL)
                 .onAppear {
                     // Remember this document so we can reopen it if the system
                     // does not restore windows on the next launch.

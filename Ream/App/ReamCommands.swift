@@ -6,6 +6,9 @@ import SwiftUI
 /// `@FocusedValue`) and are disabled when no document window is key.
 struct ReamCommands: Commands {
     @FocusedValue(\.pdfCoordinator) private var coordinator
+    @FocusedValue(\.pdfReferenceDocument) private var document
+    @FocusedValue(\.documentActions) private var actions
+    @Environment(\.undoManager) private var undoManager
     @ObservedObject private var palette = CommandPaletteService.shared
 
     var body: some Commands {
@@ -16,6 +19,28 @@ struct ReamCommands: Commands {
                 palette.toggle()
             }
             .keyboardShortcut("k", modifiers: .command)
+
+            Divider()
+        }
+
+        // File menu: metadata + security. Grouped after the system Info item so
+        // ⌘I lands naturally. All target the focused window via @FocusedValue and
+        // disable when no document is key.
+        CommandGroup(after: .importExport) {
+            Divider()
+
+            Button("Document Properties…") { actions?.present(.properties) }
+                .keyboardShortcut("i", modifiers: .command)
+                .disabled(actions == nil || document?.isLocked == true)
+
+            Button("Encrypt…") { actions?.present(.encrypt) }
+                .disabled(actions == nil || document?.isLocked == true)
+
+            Button("Remove Password…") { removePassword() }
+                .disabled(document?.canRemovePassword != true)
+
+            Button("Strip All Metadata…") { actions?.present(.stripConfirm) }
+                .disabled(actions == nil || document?.isLocked == true)
 
             Divider()
         }
@@ -43,6 +68,17 @@ struct ReamCommands: Commands {
             Button("Fit Width") { coordinator?.perform(.fitWidth) }
                 .keyboardShortcut("2", modifiers: .command)
                 .disabled(coordinator == nil)
+        }
+    }
+
+    /// Remove the password from the focused document, surfacing any error via
+    /// the window's actions model.
+    private func removePassword() {
+        guard let document else { return }
+        do {
+            try document.removePassword(undoManager: undoManager)
+        } catch {
+            actions?.report(error)
         }
     }
 }
