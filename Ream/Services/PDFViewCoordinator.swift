@@ -11,6 +11,12 @@ enum PDFViewAction {
     case actualSize
     case fitWidth
     case fitPage
+    /// Re-layout after a programmatic page mutation (insert/remove/reorder).
+    /// PDFKit does not always redraw when the document's page list changes out
+    /// from under it, so page ops nudge the view through this action.
+    case reload
+    /// Scroll the view so the given 0-based page index is visible.
+    case goToPage(Int)
 }
 
 /// Bridges SwiftUI commands to the underlying AppKit `PDFView`.
@@ -42,6 +48,16 @@ final class PDFViewCoordinator: ObservableObject {
             fitWidth(in: pdfView)
         case .fitPage:
             pdfView.autoScales = true
+        case .reload:
+            // Force PDFKit to rebuild its page layout after a structural edit.
+            let doc = pdfView.document
+            pdfView.document = nil
+            pdfView.document = doc
+            pdfView.layoutDocumentView()
+        case .goToPage(let index):
+            if let page = pdfView.document?.page(at: index) {
+                pdfView.go(to: page)
+            }
         }
     }
 

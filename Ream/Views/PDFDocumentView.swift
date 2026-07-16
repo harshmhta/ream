@@ -4,12 +4,14 @@ import PDFKit
 /// The root view for a single open PDF document window.
 ///
 /// Composes the annotation toolbar, the PDFKit renderer (annotation-aware via
-/// ``ReamPDFView``), the annotation inspector, and the ⌘K command palette
-/// overlay. Wires the per-window ``PDFViewCoordinator``, ``AnnotationController``,
-/// ``PDFReferenceDocument`` and ``DocumentActionsModel`` into the environment so
-/// menu commands and the palette can drive whichever window is focused, and
-/// hosts the metadata/security sheets. Locked (encrypted) documents show an
-/// unlock prompt instead of the editor.
+/// ``ReamPDFView``), the annotation inspector, the ⌘K command palette overlay,
+/// the page-op sheets (Manage Pages / Merge / Split / Insert) with their
+/// background-operation progress panel, and the metadata/security sheets. Wires
+/// the per-window ``PDFViewCoordinator``, ``AnnotationController``,
+/// ``PageOpsController``, ``PDFReferenceDocument`` and ``DocumentActionsModel``
+/// into the environment so menu commands and the palette can drive whichever
+/// window is focused. Locked (encrypted) documents show an unlock prompt instead
+/// of the editor.
 struct PDFDocumentView: View {
     @ObservedObject var document: PDFReferenceDocument
     let fileURL: URL?
@@ -17,6 +19,7 @@ struct PDFDocumentView: View {
     @StateObject private var actions = DocumentActionsModel()
     @StateObject private var palette = CommandPaletteService.shared
     @StateObject private var annotations: AnnotationController
+    @StateObject private var pageOps: PageOpsController
     @Environment(\.undoManager) private var undoManager
 
     @State private var showInspector = false
@@ -29,9 +32,29 @@ struct PDFDocumentView: View {
         self.document = document
         self.fileURL = fileURL
         _annotations = StateObject(wrappedValue: AnnotationController(document: document))
+        _pageOps = StateObject(wrappedValue: PageOpsController(document: document))
     }
 
     var body: some View {
+        // The three `.sheet(item:)` bindings (annotation editing, page ops,
+        // metadata/security) are attached to *different* views — the annotation
+        // editor to `canvas`, the page-op sheet to `editorRoot`, and the
+        // metadata/security sheet here — so no view hosts more than one sheet.
+        editorRoot
+            .sheet(item: $actions.activeSheet, content: sheet)
+            .alert("Operation Failed",
+                   isPresented: Binding(
+                    get: { actions.errorMessage != nil },
+                    set: { if !$0 { actions.errorMessage = nil } }
+                   ),
+                   presenting: actions.errorMessage) { _ in
+                Button("OK", role: .cancel) { actions.errorMessage = nil }
+            } message: { message in
+                Text(message)
+            }
+    }
+
+    private var editorRoot: some View {
         Group {
             if document.isLocked {
                 lockedState
@@ -43,31 +66,38 @@ struct PDFDocumentView: View {
         .focusedSceneValue(\.pdfReferenceDocument, document)
         .focusedSceneValue(\.documentActions, actions)
         .focusedSceneValue(\.annotationController, annotations)
+        .focusedSceneValue(\.pageOps, pageOps)
         .animation(.easeInOut(duration: 0.15), value: showInspector)
-        .overlay {
-            if palette.isPresented {
-                CommandPaletteView()
-                    .environmentObject(palette)
-                    .transition(.opacity)
-            }
-        }
+        .overlay { paletteOverlay }
+        .overlay { progressOverlay }
         .animation(.easeInOut(duration: 0.12), value: palette.isPresented)
-        .sheet(item: $actions.activeSheet, content: sheet)
+        .sheet(item: $pageOps.activeSheet, content: pageOpsSheet)
         .alert("Operation Failed",
-               isPresented: Binding(
-                get: { actions.errorMessage != nil },
-                set: { if !$0 { actions.errorMessage = nil } }
-               ),
-               presenting: actions.errorMessage) { _ in
-            Button("OK", role: .cancel) { actions.errorMessage = nil }
-        } message: { message in
-            Text(message)
+               isPresented: Binding(get: { pageOps.errorMessage != nil },
+                                    set: { if !$0 { pageOps.errorMessage = nil } })) {
+            Button("OK", role: .cancel) { pageOps.errorMessage = nil }
+        } message: {
+            Text(pageOps.errorMessage ?? "")
         }
         .background(WindowAccessor { hostWindow = $0 })
         .onAppear {
+            pageOps.coordinator = coordinator
+            pageOps.undoManager = undoManager
+            pageOps.registerPaletteCommands()
             registerPaletteCommands()
             AnnotationCommandRegistrar.setActive(annotations, showInspector: $showInspector)
             promptForPasswordIfLocked()
+        }
+        // Keep the page-ops controller's undo manager current — the environment
+        // value can arrive/refresh after first appearance.
+        .onChange(of: undoManager) { _, newValue in
+            pageOps.undoManager = newValue
+        }
+        // Re-layout the on-screen view after in-place page mutations.
+        .onReceive(NotificationCenter.default.publisher(for: .reamPagesDidChange)) { note in
+            if note.object as? PDFReferenceDocument === document {
+                coordinator.perform(.reload)
+            }
         }
         // Re-target the annotation palette commands at this document whenever
         // *this* window takes key, so ⌘K acts on the focused document (not
@@ -76,7 +106,10 @@ struct PDFDocumentView: View {
             guard let keyed = note.object as? NSWindow, keyed === hostWindow else { return }
             AnnotationCommandRegistrar.setActive(annotations, showInspector: $showInspector)
         }
-        .onDisappear(perform: unregisterPaletteCommands)
+        .onDisappear {
+            pageOps.unregisterPaletteCommands()
+            unregisterPaletteCommands()
+        }
     }
 
     /// Toolbar + canvas + optional inspector, shown when the document is unlocked.
@@ -124,6 +157,20 @@ struct PDFDocumentView: View {
     // MARK: - Sheets
 
     @ViewBuilder
+    private func pageOpsSheet(_ sheet: PageOpsController.Sheet) -> some View {
+        switch sheet {
+        case .managePages:
+            ManagePagesView(document: document, controller: pageOps)
+        case .merge:
+            MergePDFsView(controller: pageOps)
+        case .split:
+            SplitPDFView(controller: pageOps)
+        case .insert:
+            InsertPagesView(controller: pageOps)
+        }
+    }
+
+    @ViewBuilder
     private func sheet(for sheet: DocumentSheet) -> some View {
         switch sheet {
         case .properties:
@@ -139,6 +186,27 @@ struct PDFDocumentView: View {
             }
         case .unlock:
             UnlockDocumentView(document: document)
+        }
+    }
+
+    // MARK: - Overlays
+
+    @ViewBuilder
+    private var paletteOverlay: some View {
+        if palette.isPresented {
+            CommandPaletteView()
+                .environmentObject(palette)
+                .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var progressOverlay: some View {
+        if let progress = pageOps.progress {
+            OperationProgressView(progress: progress) {
+                pageOps.cancelCurrentOperation()
+            }
+            .transition(.opacity)
         }
     }
 
@@ -176,7 +244,7 @@ struct PDFDocumentView: View {
         }
     }
 
-    // MARK: - ⌘K palette registration
+    // MARK: - ⌘K palette registration (metadata + security)
 
     private func registerPaletteCommands() {
         palette.register([
