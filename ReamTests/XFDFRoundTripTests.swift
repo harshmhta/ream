@@ -151,4 +151,52 @@ final class XFDFRoundTripTests: XCTestCase {
         XCTAssertEqual(importedReply?.reamInReplyTo, parentID, "reply should point at parent id")
         XCTAssertEqual(importedParent?.reamResolved, true, "resolve state must survive")
     }
+
+    func testLineEndpointsSurviveRoundTrip() throws {
+        // Locks in the annotation-space ↔ absolute-page-space conversion for
+        // line/arrow endpoints through XFDF.
+        let source = makeDocument(pages: 1)
+        let page = source.page(at: 0)!
+        let a = CGPoint(x: 120, y: 300), b = CGPoint(x: 260, y: 420)
+        let arrow = AnnotationFactory.lineShape(.arrow, from: a, to: b, style: .init())
+        page.addAnnotation(arrow)
+        // Absolute endpoints = bounds.origin + annotation-space endpoint.
+        let originalStartAbs = CGPoint(x: arrow.bounds.minX + arrow.startPoint.x,
+                                       y: arrow.bounds.minY + arrow.startPoint.y)
+        let originalEndAbs = CGPoint(x: arrow.bounds.minX + arrow.endPoint.x,
+                                     y: arrow.bounds.minY + arrow.endPoint.y)
+
+        let xfdf = XFDFService.export(source)
+        let target = makeDocument(pages: 1)
+        try XFDFService.import(xfdf, into: target)
+
+        let imported = try XCTUnwrap(target.page(at: 0)!.annotations.first { $0.type == "Line" })
+        let importedStartAbs = CGPoint(x: imported.bounds.minX + imported.startPoint.x,
+                                       y: imported.bounds.minY + imported.startPoint.y)
+        let importedEndAbs = CGPoint(x: imported.bounds.minX + imported.endPoint.x,
+                                     y: imported.bounds.minY + imported.endPoint.y)
+        XCTAssertEqual(importedStartAbs.x, originalStartAbs.x, accuracy: 0.5)
+        XCTAssertEqual(importedStartAbs.y, originalStartAbs.y, accuracy: 0.5)
+        XCTAssertEqual(importedEndAbs.x, originalEndAbs.x, accuracy: 0.5)
+        XCTAssertEqual(importedEndAbs.y, originalEndAbs.y, accuracy: 0.5)
+        XCTAssertEqual(imported.endLineStyle, .closedArrow, "arrowhead style preserved")
+    }
+
+    func testInkGeometrySurvivesRoundTrip() throws {
+        let source = makeDocument(pages: 1)
+        let page = source.page(at: 0)!
+        let stroke = [CGPoint(x: 100, y: 100), CGPoint(x: 150, y: 180), CGPoint(x: 200, y: 120)]
+        let ink = try XCTUnwrap(AnnotationFactory.ink(paths: [stroke], style: .init()))
+        page.addAnnotation(ink)
+
+        let xfdf = XFDFService.export(source)
+        let target = makeDocument(pages: 1)
+        try XFDFService.import(xfdf, into: target)
+
+        let imported = try XCTUnwrap(target.page(at: 0)!.annotations.first { $0.type == "Ink" })
+        // Bounds should land within a point of the original (same page geometry).
+        XCTAssertEqual(imported.bounds.minX, ink.bounds.minX, accuracy: 1.0)
+        XCTAssertEqual(imported.bounds.minY, ink.bounds.minY, accuracy: 1.0)
+        XCTAssertEqual(imported.paths?.count, 1, "one stroke preserved")
+    }
 }

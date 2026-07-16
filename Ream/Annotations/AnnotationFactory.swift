@@ -109,10 +109,15 @@ enum AnnotationFactory {
         let border = PDFBorder()
         border.lineWidth = style.lineWidth
         annotation.border = border
+        // PDFKit ink paths are in annotation space (relative to the bounds
+        // origin), so shift the page-space samples into that frame.
+        let origin = bounds.origin
         for stroke in paths where stroke.count >= 2 {
             let path = NSBezierPath()
-            path.move(to: stroke[0])
-            for p in stroke.dropFirst() { path.line(to: p) }
+            path.move(to: CGPoint(x: stroke[0].x - origin.x, y: stroke[0].y - origin.y))
+            for p in stroke.dropFirst() {
+                path.line(to: CGPoint(x: p.x - origin.x, y: p.y - origin.y))
+            }
             annotation.add(path)
         }
         applyOpacity(style.opacity, to: annotation)
@@ -142,8 +147,9 @@ enum AnnotationFactory {
         annotation.color = style.color
         let border = PDFBorder(); border.lineWidth = style.lineWidth
         annotation.border = border
-        annotation.startPoint = a
-        annotation.endPoint = b
+        // Line endpoints are in annotation space (relative to bounds origin).
+        annotation.startPoint = CGPoint(x: a.x - bounds.minX, y: a.y - bounds.minY)
+        annotation.endPoint = CGPoint(x: b.x - bounds.minX, y: b.y - bounds.minY)
         if tool == .arrow {
             annotation.startLineStyle = .none
             annotation.endLineStyle = .closedArrow
@@ -181,11 +187,33 @@ enum AnnotationFactory {
         let annotation = PDFAnnotation(bounds: rect.standardized, forType: .freeText, withProperties: nil)
         annotation.contents = contents
         annotation.font = NSFont.systemFont(ofSize: style.fontSize)
-        annotation.fontColor = style.color
+        // Bake a concrete color: dynamic catalog colors (e.g. `labelColor`)
+        // resolve to white in a headless appearance stream and vanish on paper.
+        annotation.fontColor = concreteColor(style.color, fallback: .black)
         annotation.color = .clear      // transparent background box
         annotation.alignment = .left
         stampMetadata(on: annotation)
         return annotation
+    }
+
+    /// Resolve any `NSColor` (including dynamic system colors like `labelColor`)
+    /// into a concrete sRGB color safe to bake into a PDF appearance stream.
+    ///
+    /// Dynamic catalog colors resolve against the *current* appearance; a
+    /// headless render context defaults to dark, which turns `labelColor` white
+    /// and makes text vanish on paper. Resolve in the light (aqua) appearance so
+    /// baked text/ink is legible on a white page regardless of the app's theme.
+    static func concreteColor(_ color: NSColor, fallback: NSColor) -> NSColor {
+        var resolved: NSColor?
+        if let aqua = NSAppearance(named: .aqua) {
+            aqua.performAsCurrentDrawingAppearance {
+                resolved = color.usingColorSpace(.sRGB)
+            }
+        } else {
+            resolved = color.usingColorSpace(.sRGB)
+        }
+        if let resolved, resolved.alphaComponent > 0.01 { return resolved }
+        return fallback
     }
 
     /// A callout = free-text box + a connector line stored under a custom key so

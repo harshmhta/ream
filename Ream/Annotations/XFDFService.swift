@@ -105,9 +105,12 @@ enum XFDFService {
                 element.addChild(inklist)
             }
         case "Line":
+            // startPoint/endPoint are annotation-space; XFDF `start`/`end` are
+            // absolute page coordinates.
+            let origin = bounds.origin
             let a = annotation.startPoint, b = annotation.endPoint
-            element.addAttribute(xmlAttribute(name: "start", value: "\(fmt(a.x)),\(fmt(a.y))"))
-            element.addAttribute(xmlAttribute(name: "end", value: "\(fmt(b.x)),\(fmt(b.y))"))
+            element.addAttribute(xmlAttribute(name: "start", value: "\(fmt(origin.x + a.x)),\(fmt(origin.y + a.y))"))
+            element.addAttribute(xmlAttribute(name: "end", value: "\(fmt(origin.x + b.x)),\(fmt(origin.y + b.y))"))
             let head = PDFAnnotation.name(for: annotation.startLineStyle)
             let tail = PDFAnnotation.name(for: annotation.endLineStyle)
             element.addAttribute(xmlAttribute(name: "head", value: head))
@@ -185,10 +188,15 @@ enum XFDFService {
             annotation = PDFAnnotation(bounds: rect, forType: .text, withProperties: nil)
         case "ink":
             annotation = PDFAnnotation(bounds: rect, forType: .ink, withProperties: nil)
+            // Inklist gestures are absolute page coords; PDFKit wants them in
+            // annotation space (relative to the bounds origin).
+            let inkOrigin = rect.origin
             for path in inkPaths(from: element) where path.count >= 2 {
                 let bezier = NSBezierPath()
-                bezier.move(to: path[0])
-                for p in path.dropFirst() { bezier.line(to: p) }
+                bezier.move(to: CGPoint(x: path[0].x - inkOrigin.x, y: path[0].y - inkOrigin.y))
+                for p in path.dropFirst() {
+                    bezier.line(to: CGPoint(x: p.x - inkOrigin.x, y: p.y - inkOrigin.y))
+                }
                 annotation.add(bezier)
             }
         case "square":
@@ -197,8 +205,13 @@ enum XFDFService {
             annotation = PDFAnnotation(bounds: rect, forType: .circle, withProperties: nil)
         case "line":
             annotation = PDFAnnotation(bounds: rect, forType: .line, withProperties: nil)
-            if let s = pointAttr(element, "start") { annotation.startPoint = s }
-            if let e = pointAttr(element, "end") { annotation.endPoint = e }
+            // XFDF start/end are absolute; convert to annotation space.
+            if let s = pointAttr(element, "start") {
+                annotation.startPoint = CGPoint(x: s.x - rect.minX, y: s.y - rect.minY)
+            }
+            if let e = pointAttr(element, "end") {
+                annotation.endPoint = CGPoint(x: e.x - rect.minX, y: e.y - rect.minY)
+            }
             if let head = element.attribute(forName: "head")?.stringValue {
                 annotation.startLineStyle = PDFAnnotation.lineStyle(fromName: head)
             }
