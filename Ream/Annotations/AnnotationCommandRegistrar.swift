@@ -3,14 +3,40 @@ import PDFKit
 import UniformTypeIdentifiers
 
 /// Registers annotation actions into the ⌘K command palette
-/// (`CommandPaletteService.shared`). Called when a document view appears; the
-/// registry de-dupes by id, so re-registering on appear is safe. The commands
-/// capture the *live* controller so they always act on the focused document's
-/// annotations.
+/// (`CommandPaletteService.shared`).
+///
+/// The command set is registered **once** and its closures resolve the
+/// currently-focused document's controller through the weakly-held ``active``
+/// reference at invocation time. This matters because the palette service is an
+/// app-wide singleton: capturing a specific per-window controller in a
+/// long-lived closure would (a) leak that window's document forever and
+/// (b) make ⌘K act on a stale document once another window takes focus. Each
+/// document view sets ``active`` when it appears / becomes key (see
+/// ``setActive(_:showInspector:)``), mirroring how the menu commands use
+/// `@FocusedValue`.
 enum AnnotationCommandRegistrar {
 
+    /// The focused document's controller. Weak so closing a window releases its
+    /// document rather than pinning it in the singleton.
+    @MainActor private(set) static weak var active: AnnotationController?
+    /// The focused window's inspector toggle.
+    @MainActor private static var activeShowInspector: Binding<Bool>?
+
+    /// Mark `controller` as the target for palette commands, and register the
+    /// (idempotent) command set on first call.
     @MainActor
-    static func register(_ controller: AnnotationController, showInspector: Binding<Bool>) {
+    static func setActive(_ controller: AnnotationController, showInspector: Binding<Bool>) {
+        active = controller
+        activeShowInspector = showInspector
+        registerIfNeeded()
+    }
+
+    @MainActor private static var didRegister = false
+
+    @MainActor
+    private static func registerIfNeeded() {
+        guard !didRegister else { return }
+        didRegister = true
         let service = CommandPaletteService.shared
         var commands: [PaletteCommand] = []
 
@@ -21,7 +47,7 @@ enum AnnotationCommandRegistrar {
                 title: "Annotate: \(tool.title)",
                 category: "Annotate",
                 keyboardShortcut: nil
-            ) { controller.tool = tool })
+            ) { active?.tool = tool })
         }
 
         // Palette colors.
@@ -31,7 +57,7 @@ enum AnnotationCommandRegistrar {
                 title: "Highlight Color: \(swatch.name)",
                 category: "Annotate",
                 keyboardShortcut: "⌃\(swatch.id)"
-            ) { controller.applyPaletteColor(id: swatch.id) })
+            ) { active?.applyPaletteColor(id: swatch.id) })
         }
 
         // List / inspector.
@@ -39,33 +65,33 @@ enum AnnotationCommandRegistrar {
             id: "annotate.toggleInspector",
             title: "Toggle Annotation List",
             category: "Annotate"
-        ) { showInspector.wrappedValue.toggle() })
+        ) { activeShowInspector?.wrappedValue.toggle() })
 
         // XFDF import / export.
         commands.append(PaletteCommand(
             id: "annotate.exportXFDF",
             title: "Export Annotations to XFDF…",
             category: "Annotate"
-        ) { exportXFDF(controller) })
+        ) { if let active { exportXFDF(active) } })
 
         commands.append(PaletteCommand(
             id: "annotate.importXFDF",
             title: "Import Annotations from XFDF…",
             category: "Annotate"
-        ) { importXFDF(controller) })
+        ) { if let active { importXFDF(active) } })
 
         // Flatten.
         commands.append(PaletteCommand(
             id: "annotate.flattenAll",
             title: "Flatten All Annotations",
             category: "Annotate"
-        ) { controller.flatten(onlySelected: false) })
+        ) { active?.flatten(onlySelected: false) })
 
         commands.append(PaletteCommand(
             id: "annotate.flattenSelected",
             title: "Flatten Selected Annotation",
             category: "Annotate"
-        ) { controller.flatten(onlySelected: true) })
+        ) { active?.flatten(onlySelected: true) })
 
         service.register(commands)
     }

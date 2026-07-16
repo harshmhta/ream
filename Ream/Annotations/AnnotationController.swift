@@ -75,10 +75,13 @@ final class AnnotationController: ObservableObject {
         didChange()
     }
 
-    /// Remove an annotation, recording undo.
+    /// Remove an annotation, recording undo. A `Text` note carries a paired
+    /// PDFKit `Popup`; drop it too so the saved file has no dangling companion.
     func remove(_ annotation: PDFAnnotation, registerUndo: Bool = true) {
         guard let page = annotation.page else { return }
-        // Removing a note should also drop its paired popup.
+        if let popup = annotation.popup, popup.page === page {
+            page.removeAnnotation(popup)
+        }
         page.removeAnnotation(annotation)
         if registerUndo {
             undoStack.append(.remove(annotation, page))

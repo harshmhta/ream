@@ -21,6 +21,9 @@ struct PDFDocumentView: View {
 
     @State private var showInspector = false
     @State private var showStampPicker = false
+    /// This view's host window, captured so we only re-target the palette when
+    /// *our* window (not some other document's) becomes key.
+    @State private var hostWindow: NSWindow?
 
     init(document: PDFReferenceDocument, fileURL: URL?) {
         self.document = document
@@ -60,10 +63,18 @@ struct PDFDocumentView: View {
         } message: { message in
             Text(message)
         }
+        .background(WindowAccessor { hostWindow = $0 })
         .onAppear {
             registerPaletteCommands()
-            AnnotationCommandRegistrar.register(annotations, showInspector: $showInspector)
+            AnnotationCommandRegistrar.setActive(annotations, showInspector: $showInspector)
             promptForPasswordIfLocked()
+        }
+        // Re-target the annotation palette commands at this document whenever
+        // *this* window takes key, so ⌘K acts on the focused document (not
+        // whichever opened last).
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            guard let keyed = note.object as? NSWindow, keyed === hostWindow else { return }
+            AnnotationCommandRegistrar.setActive(annotations, showInspector: $showInspector)
         }
         .onDisappear(perform: unregisterPaletteCommands)
     }
@@ -206,4 +217,20 @@ struct PDFDocumentView: View {
 private struct EditingBox: Identifiable {
     let annotation: PDFAnnotation
     var id: String { annotation.reamID }
+}
+
+/// Bridges to the host `NSWindow` so the view can tell whether a
+/// `didBecomeKeyNotification` refers to its own window.
+private struct WindowAccessor: NSViewRepresentable {
+    let onResolve: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { onResolve(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { onResolve(nsView.window) }
+    }
 }
