@@ -8,6 +8,7 @@ struct ReamCommands: Commands {
     @FocusedValue(\.pdfCoordinator) private var coordinator
     @FocusedValue(\.pdfReferenceDocument) private var document
     @FocusedValue(\.documentActions) private var actions
+    @FocusedValue(\.conversionCoordinator) private var conversion
     @Environment(\.undoManager) private var undoManager
     @ObservedObject private var palette = CommandPaletteService.shared
 
@@ -41,6 +42,33 @@ struct ReamCommands: Commands {
 
             Button("Strip All Metadata…") { actions?.present(.stripConfirm) }
                 .disabled(actions == nil || document?.isLocked == true)
+
+            Divider()
+        }
+
+        // File menu — Convert & Export. All three act on the focused document's
+        // coordinator (via `@FocusedValue`) and are disabled when no document
+        // window is key. (Like the ⌘K palette, these live in a document window in
+        // v0.1; hosting them at the scene level so they work from a bare launch is
+        // a documented follow-up.)
+        CommandGroup(after: .importExport) {
+            Button("New from Images…") {
+                conversion?.presentImagesToPDF()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .shift])
+            .disabled(conversion == nil)
+
+            Button("Compress PDF…") {
+                conversion?.presentCompress()
+            }
+            .keyboardShortcut("c", modifiers: [.command, .control])
+            .disabled(conversion == nil)
+
+            Button("Export as Images…") {
+                conversion?.presentPDFToImages()
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .disabled(conversion == nil)
 
             Divider()
         }

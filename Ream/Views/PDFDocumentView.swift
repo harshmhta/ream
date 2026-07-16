@@ -6,15 +6,16 @@ import PDFKit
 /// Composes the annotation toolbar, the PDFKit renderer (annotation-aware via
 /// ``ReamPDFView``), the annotation inspector, and the ⌘K command palette
 /// overlay. Wires the per-window ``PDFViewCoordinator``, ``AnnotationController``,
-/// ``PDFReferenceDocument`` and ``DocumentActionsModel`` into the environment so
-/// menu commands and the palette can drive whichever window is focused, and
-/// hosts the metadata/security sheets. Locked (encrypted) documents show an
-/// unlock prompt instead of the editor.
+/// ``ConversionCoordinator``, ``PDFReferenceDocument`` and ``DocumentActionsModel``
+/// into the environment so menu commands and the palette can drive whichever
+/// window is focused, and hosts the metadata/security and convert/export sheets.
+/// Locked (encrypted) documents show an unlock prompt instead of the editor.
 struct PDFDocumentView: View {
     @ObservedObject var document: PDFReferenceDocument
     let fileURL: URL?
     @StateObject private var coordinator = PDFViewCoordinator()
     @StateObject private var actions = DocumentActionsModel()
+    @StateObject private var conversion = ConversionCoordinator()
     @StateObject private var palette = CommandPaletteService.shared
     @StateObject private var annotations: AnnotationController
     @Environment(\.undoManager) private var undoManager
@@ -43,6 +44,7 @@ struct PDFDocumentView: View {
         .focusedSceneValue(\.pdfReferenceDocument, document)
         .focusedSceneValue(\.documentActions, actions)
         .focusedSceneValue(\.annotationController, annotations)
+        .focusedSceneValue(\.conversionCoordinator, conversion)
         .animation(.easeInOut(duration: 0.15), value: showInspector)
         .overlay {
             if palette.isPresented {
@@ -53,6 +55,16 @@ struct PDFDocumentView: View {
         }
         .animation(.easeInOut(duration: 0.12), value: palette.isPresented)
         .sheet(item: $actions.activeSheet, content: sheet)
+        .sheet(item: $conversion.activeSheet) { sheet in
+            switch sheet {
+            case .compress:
+                CompressSheet(coordinator: conversion)
+            case .imagesToPDF:
+                ImagesToPDFSheet(coordinator: conversion)
+            case .pdfToImages:
+                PDFToImagesSheet(coordinator: conversion)
+            }
+        }
         .alert("Operation Failed",
                isPresented: Binding(
                 get: { actions.errorMessage != nil },
@@ -65,15 +77,20 @@ struct PDFDocumentView: View {
         }
         .background(WindowAccessor { hostWindow = $0 })
         .onAppear {
+            conversion.document = document
+            conversion.documentTitle = fileURL?.lastPathComponent ?? "Document"
+            ConversionCoordinator.active = conversion
             registerPaletteCommands()
+            ConversionCommands.registerIfNeeded()
             AnnotationCommandRegistrar.setActive(annotations, showInspector: $showInspector)
             promptForPasswordIfLocked()
         }
-        // Re-target the annotation palette commands at this document whenever
-        // *this* window takes key, so ⌘K acts on the focused document (not
-        // whichever opened last).
+        // Re-target the annotation + conversion palette commands at this document
+        // whenever *this* window takes key, so ⌘K acts on the focused document
+        // (not whichever opened last).
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
             guard let keyed = note.object as? NSWindow, keyed === hostWindow else { return }
+            ConversionCoordinator.active = conversion
             AnnotationCommandRegistrar.setActive(annotations, showInspector: $showInspector)
         }
         .onDisappear(perform: unregisterPaletteCommands)
