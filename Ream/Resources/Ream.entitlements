@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Sandbox: required for notarization + Mac App Store readiness. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- User-selected file access: open PDFs the user picks or drags in. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<!-- Reopen last document across launches via security-scoped bookmarks. -->
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
+</dict>
+</plist>
