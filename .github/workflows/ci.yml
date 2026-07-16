@@ -18,6 +18,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # XcodeGen emits a modern project format (objectVersion 77) that the
+      # runner's *default* Xcode (15.4) cannot read. Select the newest Xcode
+      # installed on the image so the generated project opens.
+      - name: Select latest Xcode
+        run: |
+          set -euo pipefail
+          latest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$latest" ]; then latest="/Applications/Xcode.app"; fi
+          echo "Selecting $latest"
+          sudo xcode-select -s "$latest/Contents/Developer"
+
       - name: Show toolchain
         run: |
           xcodebuild -version
