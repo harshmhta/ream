@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      # CI runners have no signing identity, so build/test ad-hoc ("Sign to Run
+      # Locally"). Unit tests (ReamTests + ReamCore) run headlessly and reliably
+      # under ad-hoc signing. UI tests require a real signing identity to inject
+      # their bundle, so they are excluded here and run locally instead.
+      - name: Build and test
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -scheme Ream \
+            -destination "platform=macOS" \
+            -resultBundlePath build/ReamTests.xcresult \
+            -only-testing:ReamTests \
+            clean build test \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_STYLE=Manual
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/ReamTests.xcresult
+          retention-days: 14
+          if-no-files-found: warn

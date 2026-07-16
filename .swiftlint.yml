@@ -1,0 +1,55 @@
+# SwiftLint configuration for Ream.
+#
+# Optional for v0.1 — CI does not enforce it yet. If you have SwiftLint
+# installed (`brew install swiftlint`), run `swiftlint` from the repo root.
+# These are sensible defaults, deliberately not fussy.
+
+included:
+  - Ream
+  - ReamCore/Sources
+  - ReamTests
+  - ReamUITests
+
+excluded:
+  - .build
+  - build
+  - Ream.xcodeproj
+  - ReamCore/.build
+
+disabled_rules:
+  - todo                    # TODOs are fine while the app is young.
+  - trailing_comma          # We use trailing commas in multiline literals.
+
+opt_in_rules:
+  - empty_count
+  - closure_spacing
+  - contains_over_first_not_nil
+  - first_where
+  - sorted_first_last
+  - redundant_nil_coalescing
+
+line_length:
+  warning: 120
+  error: 200
+  ignores_comments: true
+  ignores_urls: true
+
+identifier_name:
+  min_length: 2             # allow short names like `id`, `x`, `ns`.
+  excluded:
+    - id
+    - x
+    - y
+
+type_name:
+  min_length: 3
+
+function_body_length:
+  warning: 80
+  error: 150
+
+file_length:
+  warning: 500
+  error: 800
+
+reporter: "xcode"

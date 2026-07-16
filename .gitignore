@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+*.moved-aside
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Generated project — regenerate with `xcodegen generate` (or scripts/bootstrap.sh).
+# The project.yml is the source of truth; the .xcodeproj is a build artifact.
+Ream.xcodeproj/
+
+# Fastlane / misc
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
