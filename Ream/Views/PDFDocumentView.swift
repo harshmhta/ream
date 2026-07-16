@@ -3,32 +3,44 @@ import PDFKit
 
 /// The root view for a single open PDF document window.
 ///
-/// Composes the PDFKit renderer with the ⌘K command palette overlay, wires the
-/// per-window ``PDFViewCoordinator`` and ``DocumentActionsModel`` into the
-/// environment (so menu commands and the palette can drive this window), and
-/// hosts the metadata/security sheets.
+/// Composes the annotation toolbar, the PDFKit renderer (annotation-aware via
+/// ``ReamPDFView``), the annotation inspector, and the ⌘K command palette
+/// overlay. Wires the per-window ``PDFViewCoordinator``, ``AnnotationController``,
+/// ``PDFReferenceDocument`` and ``DocumentActionsModel`` into the environment so
+/// menu commands and the palette can drive whichever window is focused, and
+/// hosts the metadata/security sheets. Locked (encrypted) documents show an
+/// unlock prompt instead of the editor.
 struct PDFDocumentView: View {
     @ObservedObject var document: PDFReferenceDocument
     let fileURL: URL?
     @StateObject private var coordinator = PDFViewCoordinator()
     @StateObject private var actions = DocumentActionsModel()
     @StateObject private var palette = CommandPaletteService.shared
+    @StateObject private var annotations: AnnotationController
     @Environment(\.undoManager) private var undoManager
 
+    @State private var showInspector = false
+    @State private var showStampPicker = false
+
+    init(document: PDFReferenceDocument, fileURL: URL?) {
+        self.document = document
+        self.fileURL = fileURL
+        _annotations = StateObject(wrappedValue: AnnotationController(document: document))
+    }
+
     var body: some View {
-        ZStack {
+        Group {
             if document.isLocked {
                 lockedState
-            } else if document.pdfDocument.pageCount > 0 {
-                PDFKitView(document: document.pdfDocument, coordinator: coordinator)
-                    .ignoresSafeArea()
             } else {
-                emptyState
+                editorLayout
             }
         }
         .focusedSceneValue(\.pdfCoordinator, coordinator)
         .focusedSceneValue(\.pdfReferenceDocument, document)
         .focusedSceneValue(\.documentActions, actions)
+        .focusedSceneValue(\.annotationController, annotations)
+        .animation(.easeInOut(duration: 0.15), value: showInspector)
         .overlay {
             if palette.isPresented {
                 CommandPaletteView()
@@ -50,9 +62,52 @@ struct PDFDocumentView: View {
         }
         .onAppear {
             registerPaletteCommands()
+            AnnotationCommandRegistrar.register(annotations, showInspector: $showInspector)
             promptForPasswordIfLocked()
         }
         .onDisappear(perform: unregisterPaletteCommands)
+    }
+
+    /// Toolbar + canvas + optional inspector, shown when the document is unlocked.
+    private var editorLayout: some View {
+        VStack(spacing: 0) {
+            AnnotationToolbar(controller: annotations,
+                              showStampPicker: $showStampPicker,
+                              showInspector: $showInspector)
+                .popover(isPresented: $showStampPicker, arrowEdge: .top) {
+                    StampPickerView(controller: annotations, isPresented: $showStampPicker)
+                }
+            Divider()
+            HStack(spacing: 0) {
+                canvas
+                if showInspector {
+                    Divider()
+                    AnnotationInspector(controller: annotations)
+                        .transition(.move(edge: .trailing))
+                }
+            }
+        }
+    }
+
+    private var canvas: some View {
+        ZStack {
+            if document.pdfDocument.pageCount > 0 {
+                PDFKitView(document: document.pdfDocument,
+                           coordinator: coordinator,
+                           annotationController: annotations)
+                    .ignoresSafeArea()
+            } else {
+                emptyState
+            }
+        }
+        // Present the note / free-text editor as a sheet anchored to the window
+        // when an annotation asks to be edited.
+        .sheet(item: Binding(
+            get: { annotations.editingAnnotation.map { EditingBox(annotation: $0) } },
+            set: { annotations.editingAnnotation = $0?.annotation })
+        ) { box in
+            NoteEditorView(controller: annotations, annotation: box.annotation)
+        }
     }
 
     // MARK: - Sheets
@@ -145,4 +200,10 @@ struct PDFDocumentView: View {
             actions.report(error)
         }
     }
+}
+
+/// Identifiable wrapper so a `PDFAnnotation` can drive `.sheet(item:)`.
+private struct EditingBox: Identifiable {
+    let annotation: PDFAnnotation
+    var id: String { annotation.reamID }
 }

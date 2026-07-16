@@ -24,6 +24,7 @@ struct ReamApp: App {
         }
         .commands {
             ReamCommands()
+            AnnotationCommands()
         }
     }
 }

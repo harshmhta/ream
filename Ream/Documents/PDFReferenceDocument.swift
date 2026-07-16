@@ -55,15 +55,26 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         self.pdfDocument = doc
     }
 
+    /// Notify SwiftUI + the document architecture that annotations mutated in
+    /// place, so autosave/Versions captures a fresh snapshot. In-place PDFKit
+    /// edits (adding/removing annotations) don't touch a `@Published` property,
+    /// so the change publisher has to be fired manually.
+    func annotationsDidChange() {
+        objectWillChange.send()
+    }
+
     /// Snapshot the current bytes so autosave/versions can persist them.
     ///
     /// - When ``encryptionSettings`` is set, emits encrypted bytes (AES-128, the
     ///   strongest the native writer supports — see ``PDFSecurityService``).
     /// - Otherwise returns the document's current representation, which reflects
-    ///   any in-place metadata edits or a prior strip/remove-password rebuild.
+    ///   any in-place metadata edits, added annotations, or a prior
+    ///   strip/remove-password rebuild.
     ///
     /// For an untouched document this is the same byte-stable no-op round-trip
     /// the foundation shipped — we only diverge when the user explicitly edits.
+    /// Once annotations exist, PDFKit rewrites the file to include them (still
+    /// non-destructive to the original page content).
     func snapshot(contentType: UTType) throws -> Data {
         if let settings = encryptionSettings, settings.hasAnyPassword {
             return try PDFSecurityService.encryptedData(from: pdfDocument, settings: settings)

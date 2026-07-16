@@ -4,15 +4,18 @@ import PDFKit
 /// SwiftUI wrapper around AppKit's `PDFView`.
 ///
 /// PDFKit's `PDFView` is the fastest, most correct way to render PDFs on macOS
-/// (Metal-backed, tiled, handles selection/search). We wrap it with
-/// `NSViewRepresentable` and hand a reference back to the ``PDFViewCoordinator``
-/// so menu commands can drive zoom/fit.
+/// (Metal-backed, tiled, handles selection/search). We wrap the annotation-aware
+/// ``ReamPDFView`` subclass with `NSViewRepresentable` and hand a reference back
+/// to the ``PDFViewCoordinator`` (zoom/fit) and the ``AnnotationController``
+/// (authoring). The annotation controller is optional so the viewer still works
+/// without it.
 struct PDFKitView: NSViewRepresentable {
     let document: PDFKit.PDFDocument
     let coordinator: PDFViewCoordinator
+    var annotationController: AnnotationController? = nil
 
     func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
+        let view = ReamPDFView()
         view.document = document
 
         // Continuous vertical scroll is the default reading mode (per brief).
@@ -30,6 +33,8 @@ struct PDFKitView: NSViewRepresentable {
         // aware inversion for dark mode is a Phase 2 viewer feature.)
         view.backgroundColor = .windowBackgroundColor
 
+        view.annotationController = annotationController
+        annotationController?.pdfView = view
         coordinator.pdfView = view
         return view
     }
@@ -38,7 +43,11 @@ struct PDFKitView: NSViewRepresentable {
         if nsView.document !== document {
             nsView.document = document
         }
-        // Keep the coordinator pointed at the live view across updates.
+        // Keep the coordinator + annotation controller pointed at the live view.
         coordinator.pdfView = nsView
+        if let reamView = nsView as? ReamPDFView {
+            reamView.annotationController = annotationController
+            annotationController?.pdfView = reamView
+        }
     }
 }
