@@ -99,9 +99,44 @@ CommandPaletteService.shared.register(
 ### 2. The document model — `PDFReferenceDocument`
 
 Phase 2 features mutate `pdfDocument` (a `PDFKit.PDFDocument`) in place and rely
-on `snapshot(contentType:)` for saving. Today `snapshot` returns the original
-bytes unchanged (a byte-stable no-op round-trip). Editing features must preserve
+on `snapshot(contentType:)` for saving. For an untouched document `snapshot`
+still returns the original bytes unchanged (the byte-stable no-op round-trip);
+it only diverges when the user explicitly edits. Editing features must preserve
 that fidelity contract and add round-trip tests.
+
+The **metadata + security** feature extends this model with:
+
+- `updateMetadata(_:undoManager:)` — mutate the Info dictionary in place.
+- `setEncryption(_:undoManager:)` — stage an in-memory `EncryptionSettings`;
+  `snapshot()` then emits encrypted bytes at save time. **Passwords live only in
+  memory** (never persisted anywhere but the encrypted PDF itself), honoring the
+  "store nothing" rule.
+- `stripAllMetadata(undoManager:)` / `removePassword(undoManager:)` — replace
+  `pdfDocument` with a page-rebuilt copy (a fresh `PDFDocument` starts with an
+  empty catalog, the only reliable way to drop an existing `/Encrypt` dict or XMP
+  `/Metadata` stream — PDFKit otherwise carries both forward across a plain
+  re-serialize).
+
+All are undoable via `UndoManager`. The PDFKit-touching logic lives in
+`Services/PDF{Metadata,Security,Stats,XMP}Service`; portable value types
+(`DocumentMetadata`, `DocumentPermissions`, `EncryptionSettings`) live in
+`ReamCore` (Foundation-only).
+
+> **Encryption strength:** the native writer (`dataRepresentation(options:)` →
+> `CGPDFContext`) emits **AES-128** (`/V 4 /R 4 /CFM /AESV2`) — the strongest
+> algorithm reachable without a third-party engine. True AES-256 (`/V 5 /R 6
+> /AESV3`, PDF 2.0) is a tracked follow-up for when the `ReamCore` PDF object
+> model lands; it requires a native dependency (qpdf/PDFium) that is out of v0.1
+> scope.
+
+### 2a. Per-window action seams — `DocumentActionsModel` + focused values
+
+Menu commands and ⌘K palette entries drive the **focused** window through
+`@FocusedValue`, mirroring the `pdfCoordinator` pattern. `PDFDocumentView`
+publishes three focused scene values: `pdfCoordinator`, `pdfReferenceDocument`,
+and `documentActions` (a `DocumentActionsModel` that owns the `.sheet(item:)`
+state for the Document Properties / Encrypt / Strip / Unlock dialogs). A locked
+(encrypted) document auto-presents the unlock prompt on appear.
 
 ### 3. PDF view actions — `PDFViewCoordinator` / `PDFViewAction`
 
