@@ -46,7 +46,21 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         // A locked (encrypted) document loads successfully but reports
         // `isLocked == true`; the UI prompts for the open password. We do not
         // treat that as a read error.
+        //
+        // Set the annotation delegate before anything reads `page.annotations`,
+        // so Ream's non-native subtypes (Squiggly/Polygon/PolyLine) parse back
+        // as their editable subclasses. PDFKit parses annotations lazily, so
+        // installing it here (pre-display) is early enough.
+        doc.delegate = AnnotationDocumentDelegate.shared
         self.pdfDocument = doc
+    }
+
+    /// Notify SwiftUI + the document architecture that annotations mutated in
+    /// place, so autosave/Versions captures a fresh snapshot. In-place PDFKit
+    /// edits (adding/removing annotations) don't touch a `@Published` property,
+    /// so the change publisher has to be fired manually.
+    func annotationsDidChange() {
+        objectWillChange.send()
     }
 
     /// Snapshot the current bytes so autosave/versions can persist them.
@@ -54,10 +68,13 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     /// - When ``encryptionSettings`` is set, emits encrypted bytes (AES-128, the
     ///   strongest the native writer supports — see ``PDFSecurityService``).
     /// - Otherwise returns the document's current representation, which reflects
-    ///   any in-place metadata edits or a prior strip/remove-password rebuild.
+    ///   any in-place metadata edits, added annotations, or a prior
+    ///   strip/remove-password rebuild.
     ///
     /// For an untouched document this is the same byte-stable no-op round-trip
     /// the foundation shipped — we only diverge when the user explicitly edits.
+    /// Once annotations exist, PDFKit rewrites the file to include them (still
+    /// non-destructive to the original page content).
     func snapshot(contentType: UTType) throws -> Data {
         if let settings = encryptionSettings, settings.hasAnyPassword {
             return try PDFSecurityService.encryptedData(from: pdfDocument, settings: settings)

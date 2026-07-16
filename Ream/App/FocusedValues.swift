@@ -9,10 +9,21 @@ private struct PDFCoordinatorKey: FocusedValueKey {
     typealias Value = PDFViewCoordinator
 }
 
+/// Exposes the key window's ``AnnotationController`` to the Annotations menu
+/// commands (Import/Export XFDF, Flatten, markup shortcuts).
+private struct AnnotationControllerKey: FocusedValueKey {
+    typealias Value = AnnotationController
+}
+
 extension FocusedValues {
     var pdfCoordinator: PDFViewCoordinator? {
         get { self[PDFCoordinatorKey.self] }
         set { self[PDFCoordinatorKey.self] = newValue }
+    }
+
+    var annotationController: AnnotationController? {
+        get { self[AnnotationControllerKey.self] }
+        set { self[AnnotationControllerKey.self] = newValue }
     }
 }
 
