@@ -46,6 +46,12 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         // A locked (encrypted) document loads successfully but reports
         // `isLocked == true`; the UI prompts for the open password. We do not
         // treat that as a read error.
+        //
+        // Set the annotation delegate before anything reads `page.annotations`,
+        // so Ream's non-native subtypes (Squiggly/Polygon/PolyLine) parse back
+        // as their editable subclasses. PDFKit parses annotations lazily, so
+        // installing it here (pre-display) is early enough.
+        doc.delegate = AnnotationDocumentDelegate.shared
         self.pdfDocument = doc
     }
 
