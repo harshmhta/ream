@@ -20,14 +20,43 @@ import ReamCore
 final class PDFReferenceDocument: ReferenceFileDocument {
     typealias Snapshot = Data
 
-    /// The PDFKit document being displayed. Replaced wholesale by operations that
-    /// must rebuild the page tree (strip, remove-password); mutated in place for
-    /// metadata edits.
-    @Published var pdfDocument: PDFKit.PDFDocument
+    /// The PDFKit document being displayed. Concretely an ``InvertingPDFDocument``
+    /// so dark-content mode can toggle content-aware inversion per page without
+    /// touching the bytes. Replaced wholesale by operations that must rebuild the
+    /// page tree (strip, remove-password); mutated in place for metadata edits.
+    ///
+    /// Whenever it is replaced (e.g. by a security rebuild that produces a plain
+    /// `PDFDocument`), we re-establish the shared document delegate and the
+    /// current invert flag so dark-content and custom-annotation parsing keep
+    /// working on the new instance.
+    @Published var pdfDocument: PDFKit.PDFDocument {
+        didSet { configureDocument(pdfDocument) }
+    }
+
+    /// Install the shared delegate (custom annotation classes + inverting pages)
+    /// and mirror the invert flag onto `document`.
+    private func configureDocument(_ document: PDFKit.PDFDocument) {
+        if document.delegate == nil {
+            document.delegate = AnnotationDocumentDelegate.shared
+        }
+        (document as? InvertingPDFDocument)?.invertContent = invertContent
+    }
 
     /// Pending encryption to apply on the next save. `nil` means "save as
     /// plaintext". Held in memory only — see the type doc.
     @Published private(set) var encryptionSettings: EncryptionSettings?
+
+    /// Whether content-aware dark inversion is on for this document. Mirrors the
+    /// flag on ``InvertingPDFDocument`` and drives the View-menu checkmark.
+    @Published var invertContent: Bool = false {
+        didSet {
+            (pdfDocument as? InvertingPDFDocument)?.invertContent = invertContent
+        }
+    }
+
+    /// A stable key for persisting per-document preferences (dark-content, view
+    /// mode, reading position). Set from the file URL when the window opens.
+    var persistenceKey: String?
 
     /// PDF is the one and only readable/writable content type in v0.1.
     static var readableContentTypes: [UTType] { [.pdf] }
@@ -35,12 +64,14 @@ final class PDFReferenceDocument: ReferenceFileDocument {
 
     /// Create an empty (zero-page) document. Used as a last-resort fallback.
     init() {
-        self.pdfDocument = PDFKit.PDFDocument()
+        let doc = InvertingPDFDocument()
+        doc.delegate = AnnotationDocumentDelegate.shared
+        self.pdfDocument = doc
     }
 
     init(configuration: ReadConfiguration) throws {
         guard let data = configuration.file.regularFileContents,
-              let doc = PDFKit.PDFDocument(data: data) else {
+              let doc = InvertingPDFDocument(data: data) else {
             throw CocoaError(.fileReadCorruptFile)
         }
         // A locked (encrypted) document loads successfully but reports
@@ -74,7 +105,8 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     /// For an untouched document this is the same byte-stable no-op round-trip
     /// the foundation shipped — we only diverge when the user explicitly edits.
     /// Once annotations exist, PDFKit rewrites the file to include them (still
-    /// non-destructive to the original page content).
+    /// non-destructive to the original page content). Dark-content inversion is a
+    /// *render* setting only and never touches the saved bytes.
     func snapshot(contentType: UTType) throws -> Data {
         if let settings = encryptionSettings, settings.hasAnyPassword {
             return try PDFSecurityService.encryptedData(from: pdfDocument, settings: settings)

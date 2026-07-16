@@ -1,10 +1,16 @@
 import SwiftUI
 
-/// Exposes the key window's ``PDFViewCoordinator`` to the menu-bar commands.
+/// Exposes the key window's ``DocumentWindowModel`` to the menu-bar commands.
 ///
 /// SwiftUI `commands` live at the `App` level, outside any window's view tree.
-/// `@FocusedValue` lets the menu reach the coordinator belonging to whichever
-/// document window is currently focused, so ⌘+/⌘-/⌘0/⌘1 act on the right PDF.
+/// `@FocusedValue` lets the menu reach the model belonging to whichever document
+/// window is currently focused, so View-menu items and Find act on the right PDF.
+/// `ReamCommands` then re-observes that model via a nested `@ObservedObject` view
+/// so menu titles and checkmarks stay in sync with its published state.
+private struct DocumentModelKey: FocusedValueKey {
+    typealias Value = DocumentWindowModel
+}
+
 private struct PDFCoordinatorKey: FocusedValueKey {
     typealias Value = PDFViewCoordinator
 }
@@ -16,6 +22,11 @@ private struct AnnotationControllerKey: FocusedValueKey {
 }
 
 extension FocusedValues {
+    var documentModel: DocumentWindowModel? {
+        get { self[DocumentModelKey.self] }
+        set { self[DocumentModelKey.self] = newValue }
+    }
+
     var pdfCoordinator: PDFViewCoordinator? {
         get { self[PDFCoordinatorKey.self] }
         set { self[PDFCoordinatorKey.self] = newValue }

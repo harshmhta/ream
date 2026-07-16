@@ -13,14 +13,11 @@ struct ReamApp: App {
 
     var body: some Scene {
         DocumentGroup(viewing: PDFReferenceDocument.self) { file in
+            // Pass the file URL so the view can stamp a stable persistence key on
+            // the document *before* the window model is created — the model reads
+            // that key to restore per-document reading state on construction (and
+            // remembers the document for reopen-on-relaunch).
             PDFDocumentView(document: file.document, fileURL: file.fileURL)
-                .onAppear {
-                    // Remember this document so we can reopen it if the system
-                    // does not restore windows on the next launch.
-                    if let url = file.fileURL {
-                        RecentDocumentStore.shared.remember(url)
-                    }
-                }
         }
         .commands {
             ReamCommands()
