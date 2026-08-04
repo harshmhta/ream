@@ -29,6 +29,17 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     /// plaintext". Held in memory only — see the type doc.
     @Published private(set) var encryptionSettings: EncryptionSettings?
 
+    /// Monotonic counter bumped on every in-place page mutation. Views and the
+    /// thumbnail cache observe it to invalidate derived state (thumbnails, page
+    /// rows) without tracking which specific pages changed.
+    @Published private(set) var pageGeneration: Int = 0
+
+    /// Bump the mutation generation. Called by the page-ops extension after each
+    /// structural edit so observers refresh.
+    func bumpPageGeneration() {
+        pageGeneration &+= 1
+    }
+
     /// PDF is the one and only readable/writable content type in v0.1.
     static var readableContentTypes: [UTType] { [.pdf] }
     static var writableContentTypes: [UTType] { [.pdf] }

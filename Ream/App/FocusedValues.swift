@@ -15,6 +15,12 @@ private struct AnnotationControllerKey: FocusedValueKey {
     typealias Value = AnnotationController
 }
 
+/// Exposes the key window's ``PageOpsController`` so the File-menu page-ops
+/// commands act on whichever document window is focused.
+private struct PageOpsControllerKey: FocusedValueKey {
+    typealias Value = PageOpsController
+}
+
 extension FocusedValues {
     var pdfCoordinator: PDFViewCoordinator? {
         get { self[PDFCoordinatorKey.self] }
@@ -24,6 +30,13 @@ extension FocusedValues {
     var annotationController: AnnotationController? {
         get { self[AnnotationControllerKey.self] }
         set { self[AnnotationControllerKey.self] = newValue }
+    }
+
+    /// The key window's ``PageOpsController``, exposed so the File-menu page-ops
+    /// commands act on whichever document window is focused.
+    var pageOps: PageOpsController? {
+        get { self[PageOpsControllerKey.self] }
+        set { self[PageOpsControllerKey.self] = newValue }
     }
 }
 
