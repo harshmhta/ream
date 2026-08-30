@@ -21,6 +21,12 @@ private struct AnnotationControllerKey: FocusedValueKey {
     typealias Value = AnnotationController
 }
 
+/// Exposes the key window's ``ConversionCoordinator`` to the File-menu Convert &
+/// Export commands.
+private struct ConversionCoordinatorKey: FocusedValueKey {
+    typealias Value = ConversionCoordinator
+}
+
 /// Exposes the key window's ``PageOpsController`` so the File-menu page-ops
 /// commands act on whichever document window is focused.
 private struct PageOpsControllerKey: FocusedValueKey {
@@ -41,6 +47,13 @@ extension FocusedValues {
     var annotationController: AnnotationController? {
         get { self[AnnotationControllerKey.self] }
         set { self[AnnotationControllerKey.self] = newValue }
+    }
+
+    /// The key window's ``ConversionCoordinator``, so the File-menu Convert &
+    /// Export commands act on whichever document is focused.
+    var conversionCoordinator: ConversionCoordinator? {
+        get { self[ConversionCoordinatorKey.self] }
+        set { self[ConversionCoordinatorKey.self] = newValue }
     }
 
     /// The key window's ``PageOpsController``, exposed so the File-menu page-ops

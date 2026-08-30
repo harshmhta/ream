@@ -14,6 +14,7 @@ struct ReamCommands: Commands {
     @FocusedValue(\.documentModel) private var model
     @FocusedValue(\.pdfReferenceDocument) private var document
     @FocusedValue(\.documentActions) private var actions
+    @FocusedValue(\.conversionCoordinator) private var conversion
     @FocusedValue(\.pageOps) private var pageOps
     @Environment(\.undoManager) private var undoManager
     @ObservedObject private var palette = CommandPaletteService.shared
@@ -69,6 +70,37 @@ struct ReamCommands: Commands {
                 Button("Strip All Metadata…") { actions?.present(.stripConfirm) }
                     .disabled(actions == nil || document?.isLocked == true)
             }
+
+            Divider()
+        }
+
+        // File menu — Convert & Export. All three act on the focused document's
+        // coordinator (via `@FocusedValue`) and are disabled when no document
+        // window is key. (Like the ⌘K palette, these live in a document window in
+        // v0.1; hosting them at the scene level so they work from a bare launch is
+        // a documented follow-up.)
+        //
+        // "New from Images…" is ⌥⌘I, not the ⇧⌘I it shipped with: ⇧⌘I is the
+        // viewer's Invert Page Content toggle, and SwiftUI resolves a duplicate
+        // shortcut silently to whichever item it finds first.
+        CommandGroup(after: .importExport) {
+            Button("New from Images…") {
+                conversion?.presentImagesToPDF()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(conversion == nil)
+
+            Button("Compress PDF…") {
+                conversion?.presentCompress()
+            }
+            .keyboardShortcut("c", modifiers: [.command, .control])
+            .disabled(conversion == nil)
+
+            Button("Export as Images…") {
+                conversion?.presentPDFToImages()
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .disabled(conversion == nil)
 
             Divider()
         }

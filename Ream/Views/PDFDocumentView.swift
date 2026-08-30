@@ -10,20 +10,23 @@ import PDFKit
 /// - dark-content mode, view modes, and the ⌘K command palette overlay,
 /// - the page-op sheets (Manage Pages / Merge / Split / Insert) with their
 ///   background-operation progress panel,
+/// - the convert/export sheets (Compress / Images → PDF / PDF → Images),
 /// - the metadata / security sheets.
 ///
 /// The per-window ``DocumentWindowModel`` (which owns the ``PDFViewCoordinator``,
 /// search, and inspector state), the ``AnnotationController``, the
-/// ``PageOpsController``, the ``PDFReferenceDocument`` and the
-/// ``DocumentActionsModel`` are published into the focus environment so menu
-/// commands and the palette drive whichever window is focused. Locked
-/// (encrypted) documents show an unlock prompt instead of the editor.
+/// ``PageOpsController``, the ``ConversionCoordinator``, the
+/// ``PDFReferenceDocument`` and the ``DocumentActionsModel`` are published into
+/// the focus environment so menu commands and the palette drive whichever window
+/// is focused. Locked (encrypted) documents show an unlock prompt instead of the
+/// editor.
 struct PDFDocumentView: View {
     @ObservedObject var document: PDFReferenceDocument
     let fileURL: URL?
     @StateObject private var model: DocumentWindowModel
     @StateObject private var annotations: AnnotationController
     @StateObject private var actions = DocumentActionsModel()
+    @StateObject private var conversion = ConversionCoordinator()
     @StateObject private var palette = CommandPaletteService.shared
     @StateObject private var pageOps: PageOpsController
     @Environment(\.undoManager) private var undoManager
@@ -56,11 +59,12 @@ struct PDFDocumentView: View {
     }
 
     var body: some View {
-        // The three `.sheet(item:)` bindings (annotation editing, page ops,
-        // metadata/security) are attached to *different* views — the annotation
-        // editor to `canvas`, the page-op sheet to `editorRoot`, and the
-        // metadata/security sheet here — so no view hosts more than one sheet.
-        editorRoot
+        // The four `.sheet(item:)` bindings (annotation editing, page ops,
+        // convert/export, metadata/security) are attached to *different* views —
+        // the annotation editor to `canvas`, the page-op sheet to `editorRoot`,
+        // the convert/export sheet to `documentRoot`, and the metadata/security
+        // sheet here — so no view hosts more than one sheet.
+        documentRoot
             .sheet(item: $actions.activeSheet, content: sheet)
             .alert("Operation Failed",
                    isPresented: Binding(
@@ -72,6 +76,13 @@ struct PDFDocumentView: View {
             } message: { message in
                 Text(message)
             }
+    }
+
+    /// ``editorRoot`` plus the convert/export sheet. This sits on its own level so
+    /// the conversion sheet does not share a host view with the page-op sheet.
+    private var documentRoot: some View {
+        editorRoot
+            .sheet(item: $conversion.activeSheet, content: conversionSheet)
     }
 
     private var editorRoot: some View {
@@ -87,6 +98,7 @@ struct PDFDocumentView: View {
         .focusedSceneValue(\.pdfReferenceDocument, document)
         .focusedSceneValue(\.documentActions, actions)
         .focusedSceneValue(\.annotationController, annotations)
+        .focusedSceneValue(\.conversionCoordinator, conversion)
         .focusedSceneValue(\.pageOps, pageOps)
         .overlay { paletteOverlay }
         .overlay { progressOverlay }
@@ -102,11 +114,15 @@ struct PDFDocumentView: View {
         }
         .background(WindowAccessor { hostWindow = $0 })
         .onAppear {
+            conversion.document = document
+            conversion.documentTitle = fileURL?.lastPathComponent ?? "Document"
+            ConversionCoordinator.active = conversion
             pageOps.coordinator = coordinator
             pageOps.undoManager = undoManager
             ViewerCommands.register(for: model)
             registerDocumentPaletteCommands()
             pageOps.registerPaletteCommands()
+            ConversionCommands.registerIfNeeded()
             AnnotationCommandRegistrar.setActive(annotations, showInspector: $showAnnotationInspector)
             SessionTracker.shared.register(document)
             promptForPasswordIfLocked()
@@ -130,6 +146,7 @@ struct PDFDocumentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
             guard let keyed = note.object as? NSWindow, keyed === hostWindow else { return }
             ViewerCommands.setActive(model)
+            ConversionCoordinator.active = conversion
             pageOps.registerPaletteCommands()
             AnnotationCommandRegistrar.setActive(annotations, showInspector: $showAnnotationInspector)
         }
@@ -245,6 +262,18 @@ struct PDFDocumentView: View {
             SplitPDFView(controller: pageOps)
         case .insert:
             InsertPagesView(controller: pageOps)
+        }
+    }
+
+    @ViewBuilder
+    private func conversionSheet(_ sheet: ConversionCoordinator.ActiveSheet) -> some View {
+        switch sheet {
+        case .compress:
+            CompressSheet(coordinator: conversion)
+        case .imagesToPDF:
+            ImagesToPDFSheet(coordinator: conversion)
+        case .pdfToImages:
+            PDFToImagesSheet(coordinator: conversion)
         }
     }
 
