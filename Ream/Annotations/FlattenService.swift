@@ -25,6 +25,15 @@ enum FlattenService {
             Set(set.compactMap { $0.storedReamID })
         }
 
+        // Dark-content inversion is a *render* setting: `page.draw` is exactly
+        // what it overrides, so flattening with it on would bake an inverted,
+        // dark page into the saved bytes — permanently. Turn it off for the
+        // duration of the rasterizing draw and restore it afterwards.
+        let inverting = document as? InvertingPDFDocument
+        let wasInverted = inverting?.invertContent ?? false
+        inverting?.invertContent = false
+        defer { inverting?.invertContent = wasInverted }
+
         // Copy document-level attributes so metadata survives the rebuild.
         let auxiliaryInfo = pdfAuxiliaryInfo(from: document.documentAttributes ?? [:])
         guard let context = CGContext(consumer: consumer, mediaBox: nil, auxiliaryInfo) else { return nil }
@@ -71,7 +80,10 @@ enum FlattenService {
         }
         context.closePDF()
 
-        guard let flattened = PDFDocument(data: data as Data) else { return nil }
+        // Same instance the window keeps using, so it has to be an
+        // ``InvertingPDFDocument`` with Ream's delegate — otherwise flattening
+        // silently turns dark-content mode off for the rest of the session.
+        guard let flattened = InvertingPDFDocument(data: data as Data) else { return nil }
         flattened.delegate = AnnotationDocumentDelegate.shared
         // Re-attach the preserved live annotations to the flattened pages.
         for (pageIndex, annotations) in liveByPage {

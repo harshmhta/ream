@@ -180,7 +180,13 @@ enum PDFSecurityService {
         stripAnnotations: Bool,
         clearMetadata: Bool
     ) -> PDFDocument {
-        let fresh = PDFDocument()
+        // An ``InvertingPDFDocument`` (with Ream's shared delegate), not a bare
+        // `PDFDocument`: the window keeps using this instance after the rebuild,
+        // and dark-content inversion + custom annotation classes both key off the
+        // document's type/delegate. A plain rebuild silently disables them for the
+        // rest of the session.
+        let fresh = InvertingPDFDocument()
+        fresh.delegate = AnnotationDocumentDelegate.shared
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index)?.copy() as? PDFPage else { continue }
             if stripAnnotations {

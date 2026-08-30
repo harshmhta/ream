@@ -14,6 +14,34 @@ final class AnnotationServicesTests: XCTestCase {
         return doc
     }
 
+    // MARK: Document replacement
+
+    /// Strip All Metadata / Remove Password / Flatten swap `pdfDocument` for a
+    /// rebuilt one. The controller's selection and undo stacks point at
+    /// annotations and pages of the old document, so undoing afterwards would
+    /// re-add an annotation to a page that is no longer in the document.
+    @MainActor
+    func testDocumentReplacementClearsAnnotationState() throws {
+        let refDoc = PDFReferenceDocument()
+        refDoc.pdfDocument = makeDocument(pages: 1)
+        let controller = AnnotationController(document: refDoc)
+
+        let page = try XCTUnwrap(refDoc.pdfDocument.page(at: 0))
+        let note = AnnotationFactory.boxShape(.rectangle,
+                                              rect: CGRect(x: 20, y: 20, width: 40, height: 40),
+                                              style: .init())
+        controller.add(note, to: page)
+        controller.selectedAnnotation = note
+        XCTAssertTrue(controller.canUndo)
+
+        refDoc.pdfDocument = makeDocument(pages: 1)
+
+        XCTAssertNil(controller.selectedAnnotation, "selection must not survive the swap")
+        XCTAssertNil(controller.editingAnnotation)
+        XCTAssertFalse(controller.canUndo, "undo must not target the replaced document's pages")
+        XCTAssertFalse(controller.canRedo)
+    }
+
     // MARK: Flatten
 
     func testFlattenAllRemovesAnnotationsButKeepsPages() throws {

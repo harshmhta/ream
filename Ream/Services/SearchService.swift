@@ -60,9 +60,26 @@ final class SearchService: ObservableObject {
     /// all pages each time. Page ops invalidate it via ``pagesDidChange()``.
     private var pageTextCache: [(index: Int, text: String)]?
 
+    /// Point the service at `document`, dropping everything derived from the
+    /// previous one.
+    ///
+    /// Called once per window at open, and again whenever the window's
+    /// ``PDFReferenceDocument`` swaps its `pdfDocument` wholesale — Strip All
+    /// Metadata, Remove Password and Flatten Annotations all rebuild the document
+    /// rather than mutating it. The old document is held **weakly**, so without
+    /// this the service would be left with no document at all and every query
+    /// would silently come back empty.
     func attach(to document: PDFKit.PDFDocument) {
         self.document = document
         pageTextCache = nil
+        searchTask?.cancel()
+        results = []
+        currentIndex = nil
+        // Drop highlights: their `PDFSelection`s belong to pages of the document
+        // that just went away.
+        onFocusResult?([], nil)
+        // Re-run whatever the user has typed against the new document.
+        runSearch(query: query, options: options)
     }
 
     /// Drop the cached page text after a structural page edit (insert / delete /

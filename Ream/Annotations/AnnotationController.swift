@@ -47,10 +47,32 @@ final class AnnotationController: ObservableObject {
     private var undoStack: [UndoStep] = []
     private var redoStack: [UndoStep] = []
 
+    private var cancellables: Set<AnyCancellable> = []
+
     init(document: PDFReferenceDocument) {
         self.document = document
         // Adopt the document's stored current palette color as the style color.
         self.style.color = AnnotationPalette.swatches[0].nsColor
+
+        // Strip All Metadata, Remove Password and Flatten Annotations replace
+        // `pdfDocument` wholesale. Everything held here — the selection, the
+        // inline editor target, the undo/redo stacks — refers to annotations and
+        // pages of the document that just went away, so undoing after one of
+        // those would try to re-add an annotation to a detached page. Drop it,
+        // exactly as ``flatten(onlySelected:)`` already does for its own swap.
+        document.$pdfDocument
+            .dropFirst()
+            .sink { [weak self] _ in self?.documentWasReplaced() }
+            .store(in: &cancellables)
+    }
+
+    /// Reset the per-document annotation state after a wholesale replacement.
+    private func documentWasReplaced() {
+        selectedAnnotation = nil
+        editingAnnotation = nil
+        undoStack.removeAll()
+        redoStack.removeAll()
+        revision &+= 1
     }
 
     // MARK: Undo model

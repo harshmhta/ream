@@ -132,4 +132,31 @@ final class DarkContentRenderTests: XCTestCase {
         XCTAssertGreaterThan(darkGreen.g, darkGreen.r, "green box should stay green-dominant in dark mode")
         XCTAssertGreaterThan(darkGreen.g, darkGreen.b)
     }
+
+    /// Flattening rasterizes each page through `page.draw` — the very method
+    /// dark-content overrides. With inversion on, that would bake a dark,
+    /// colour-inverted page into the *saved bytes*, breaking the "dark content is
+    /// a render setting only" contract permanently.
+    @MainActor
+    func testFlattenDoesNotBakeInvertedColors() throws {
+        let doc = try makeColorfulDocument()
+        doc.invertContent = true
+
+        let flattened = try XCTUnwrap(FlattenService.flatten(doc))
+        let page = try XCTUnwrap(flattened.page(at: 0))
+        (flattened as? InvertingPDFDocument)?.invertContent = false
+
+        let h = page.bounds(for: .mediaBox).height
+        let rep = try renderBitmap(page)
+        dumpIfRequested(rep, name: "page_flattened_while_inverted.png")
+        let paper = avgColor(rep, pageRect: CGRect(x: 30, y: 150, width: 240, height: 60), pageHeight: h)
+        let red = avgColor(rep, pageRect: CGRect(x: 40, y: 55, width: 70, height: 70), pageHeight: h)
+
+        XCTAssertGreaterThan(paper.r, 0.8, "flattened paper must stay white — inversion is render-only")
+        XCTAssertGreaterThan(red.r, 0.5, "flattened red box must stay red")
+        XCTAssertLessThan(red.g, 0.4)
+
+        // And the document is left exactly as the user had it.
+        XCTAssertTrue(doc.invertContent, "flatten must restore the document's invert flag")
+    }
 }
