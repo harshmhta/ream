@@ -54,6 +54,16 @@ final class DocumentWindowModel: ObservableObject {
             self?.coordinator.showSearchResults(all, active: active)
         }
 
+        // Follow wholesale document replacement (Strip All Metadata, Remove
+        // Password, Flatten Annotations, and undo of any of those). `@Published`
+        // publishes in `willSet`, so the new document arrives as the sink's
+        // value while `document.pdfDocument` still holds the old one — use the
+        // value, not the property.
+        document.$pdfDocument
+            .dropFirst()
+            .sink { [weak self] replacement in self?.documentDidChange(to: replacement) }
+            .store(in: &cancellables)
+
         // Restore persisted per-document state (dark-content is applied here;
         // reading position is applied by the view once the PDFView exists).
         if let key = document.persistenceKey,
@@ -98,6 +108,16 @@ final class DocumentWindowModel: ObservableObject {
     func findPrevious() {
         showInspector(.search)
         search.focusPrevious()
+    }
+
+    /// Re-derive everything this window cached from the document after it was
+    /// replaced wholesale. Search holds the document weakly and caches its page
+    /// text; the outline tree was built from the old document's bookmarks (a
+    /// strip drops them entirely, and the old destinations point at pages that
+    /// are no longer on screen).
+    private func documentDidChange(to replacement: PDFKit.PDFDocument) {
+        outlineNodes = OutlineNode.tree(from: replacement.outlineRoot, document: replacement)
+        search.attach(to: replacement)
     }
 
     /// React to a structural page mutation (insert / delete / move / rotate).

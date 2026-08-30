@@ -1,5 +1,6 @@
 import XCTest
 import PDFKit
+import ReamCore
 @testable import Ream
 
 /// Tests for the dark-content document/page plumbing.
@@ -55,6 +56,63 @@ final class InvertingPDFDocumentTests: XCTestCase {
         let doc = PDFReferenceDocument()
         doc.invertContent = true
         XCTAssertTrue((doc.pdfDocument as? InvertingPDFDocument)?.invertContent ?? false)
+    }
+
+    // MARK: - Wholesale document replacement keeps dark content working
+
+    /// Strip All Metadata replaces `pdfDocument` with a rebuilt copy. If that
+    /// rebuild is a plain `PDFDocument`, dark-content inversion silently stops
+    /// working for the rest of the session (the page draw path keys off the
+    /// document's type).
+    @MainActor
+    func testStripAllMetadataKeepsInvertingDocument() throws {
+        let doc = PDFReferenceDocument()
+        doc.pdfDocument = try makeInverting(pages: ["Strip me."])
+        doc.invertContent = true
+
+        try doc.stripAllMetadata(undoManager: nil)
+
+        let rebuilt = try XCTUnwrap(doc.pdfDocument as? InvertingPDFDocument)
+        XCTAssertTrue(rebuilt.invertContent, "the window's invert setting must carry over")
+        XCTAssertTrue(try XCTUnwrap(doc.pdfDocument.page(at: 0)) is InvertingPDFPage)
+    }
+
+    /// Same for Remove Password, which rebuilds the page tree to drop /Encrypt.
+    @MainActor
+    func testRemovePasswordKeepsInvertingDocument() throws {
+        let source = PDFReferenceDocument()
+        source.pdfDocument = try makeInverting(pages: ["Locked."])
+        let encrypted = try PDFSecurityService.encryptedData(
+            from: source.pdfDocument,
+            settings: EncryptionSettings(userPassword: "open", ownerPassword: "owner"))
+
+        let doc = PDFReferenceDocument()
+        doc.pdfDocument = try XCTUnwrap(InvertingPDFDocument(data: encrypted))
+        doc.pdfDocument.delegate = AnnotationDocumentDelegate.shared
+        XCTAssertTrue(doc.unlock(withPassword: "open"))
+        doc.invertContent = true
+
+        try doc.removePassword(undoManager: nil)
+
+        let rebuilt = try XCTUnwrap(doc.pdfDocument as? InvertingPDFDocument)
+        XCTAssertTrue(rebuilt.invertContent)
+        XCTAssertFalse(doc.pdfDocument.isEncrypted)
+    }
+
+    /// And for Flatten Annotations, which rebuilds the document from rasterized
+    /// page content.
+    @MainActor
+    func testFlattenKeepsInvertingDocument() throws {
+        let doc = PDFReferenceDocument()
+        doc.pdfDocument = try makeInverting(pages: ["Flatten me."])
+        doc.invertContent = true
+
+        let flattened = try XCTUnwrap(FlattenService.flatten(doc.pdfDocument))
+        doc.pdfDocument = flattened
+
+        let rebuilt = try XCTUnwrap(doc.pdfDocument as? InvertingPDFDocument)
+        XCTAssertTrue(rebuilt.invertContent)
+        XCTAssertTrue(try XCTUnwrap(doc.pdfDocument.page(at: 0)) is InvertingPDFPage)
     }
 
     // MARK: - Page ops keep dark content working
