@@ -13,6 +13,14 @@ import AppKit
 final class SessionTracker {
     static let shared = SessionTracker()
 
+    /// Where the session is persisted. Injectable so tests can drive a tracker
+    /// against a scratch `UserDefaults` suite instead of the real one.
+    private let store: RecentDocumentStore
+
+    init(store: RecentDocumentStore = .shared) {
+        self.store = store
+    }
+
     /// URLs of currently-open documents, insertion-ordered.
     private var openURLs: [URL] = []
 
@@ -24,7 +32,7 @@ final class SessionTracker {
             persist()
         }
         // Keep the single most-recent pointer fresh too.
-        RecentDocumentStore.shared.remember(url)
+        store.remember(url)
     }
 
     func unregister(_ document: PDFReferenceDocument) {
@@ -34,6 +42,6 @@ final class SessionTracker {
     }
 
     private func persist() {
-        RecentDocumentStore.shared.updateSession(openURLs: openURLs)
+        store.updateSession(openURLs: openURLs)
     }
 }
