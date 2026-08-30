@@ -45,5 +45,19 @@
 			</array>
 		</dict>
 	</array>
+	<!-- Private drag type for reordering pages in the Manage Pages grid. -->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.ream.page-drag</string>
+			<key>UTTypeDescription</key>
+			<string>Ream Page Reference</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

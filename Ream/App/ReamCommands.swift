@@ -14,6 +14,7 @@ struct ReamCommands: Commands {
     @FocusedValue(\.documentModel) private var model
     @FocusedValue(\.pdfReferenceDocument) private var document
     @FocusedValue(\.documentActions) private var actions
+    @FocusedValue(\.pageOps) private var pageOps
     @Environment(\.undoManager) private var undoManager
     @ObservedObject private var palette = CommandPaletteService.shared
 
@@ -25,24 +26,49 @@ struct ReamCommands: Commands {
             Divider()
         }
 
-        // File menu: metadata + security. Grouped after the system Info item so
-        // ⌘I lands naturally. All target the focused window via @FocusedValue and
-        // disable when no document is key.
+        // File menu: page operations, then metadata + security. Grouped after
+        // the system Save/Import cluster (and the Info item so ⌘I lands
+        // naturally). All target the focused window via @FocusedValue and disable
+        // when no document is key.
+        //
+        // Each section is wrapped in a `Group` so this `CommandGroup` sees only a
+        // handful of direct children: `@CommandsBuilder` (like `ViewBuilder`)
+        // takes at most 10 direct statements and silently drops the rest — see
+        // the View menu below, where that bug first showed up.
         CommandGroup(after: .importExport) {
             Divider()
 
-            Button("Document Properties…") { actions?.present(.properties) }
-                .keyboardShortcut("i", modifiers: .command)
-                .disabled(actions == nil || document?.isLocked == true)
+            Group {
+                Button("Manage Pages…") { pageOps?.showManagePages() }
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
+                    .disabled(pageOps == nil || document?.isLocked == true)
 
-            Button("Encrypt…") { actions?.present(.encrypt) }
-                .disabled(actions == nil || document?.isLocked == true)
+                Button("Merge PDFs…") { pageOps?.showMerge() }
+                    .disabled(pageOps == nil || document?.isLocked == true)
 
-            Button("Remove Password…") { removePassword() }
-                .disabled(document?.canRemovePassword != true)
+                Button("Split PDF…") { pageOps?.showSplit() }
+                    .disabled(pageOps == nil || document?.isLocked == true)
 
-            Button("Strip All Metadata…") { actions?.present(.stripConfirm) }
-                .disabled(actions == nil || document?.isLocked == true)
+                Button("Insert Pages…") { pageOps?.showInsert() }
+                    .disabled(pageOps == nil || document?.isLocked == true)
+            }
+
+            Divider()
+
+            Group {
+                Button("Document Properties…") { actions?.present(.properties) }
+                    .keyboardShortcut("i", modifiers: .command)
+                    .disabled(actions == nil || document?.isLocked == true)
+
+                Button("Encrypt…") { actions?.present(.encrypt) }
+                    .disabled(actions == nil || document?.isLocked == true)
+
+                Button("Remove Password…") { removePassword() }
+                    .disabled(document?.canRemovePassword != true)
+
+                Button("Strip All Metadata…") { actions?.present(.stripConfirm) }
+                    .disabled(actions == nil || document?.isLocked == true)
+            }
 
             Divider()
         }

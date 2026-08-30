@@ -89,7 +89,41 @@ final class SearchServiceTests: XCTestCase {
         XCTAssertEqual(service.currentIndex, 0)
     }
 
+    /// A page op that changes the page list must invalidate the cached page text
+    /// and re-run the query: every result stores the page *index* it was found
+    /// on, so after a delete the stale hits address the wrong pages.
+    func testPagesDidChangeRefreshesResultsAfterPageDeletion() throws {
+        let doc = try makeDoc() // page 0: one "fox"; page 1: two "fox"
+        let service = SearchService()
+        service.attach(to: doc)
+        XCTAssertEqual(collectResultsOn(service, query: "fox", options: .init()).count, 3)
+
+        doc.removePage(at: 1)
+        service.pagesDidChange()
+        let after = settle(service)
+
+        XCTAssertEqual(after.count, 1, "hits from the deleted page must be gone")
+        XCTAssertEqual(after.first?.pageIndex, 0)
+    }
+
     // MARK: - Helpers
+
+    /// Poll until the service stops searching and its results stop changing.
+    @discardableResult
+    private func settle(_ service: SearchService) -> [SearchResult] {
+        let expectation = expectation(description: "search settles")
+        var lastCount = -1
+        var stableTicks = 0
+        let token = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { t in
+            if service.isSearching { stableTicks = 0; return }
+            if service.results.count == lastCount { stableTicks += 1 } else { stableTicks = 0 }
+            lastCount = service.results.count
+            if stableTicks >= 4 { t.invalidate(); expectation.fulfill() }
+        }
+        RunLoop.current.add(token, forMode: .common)
+        wait(for: [expectation], timeout: 3.0)
+        return service.results
+    }
 
     /// Like `collectResults`, but drives an existing service so the caller can
     /// keep interacting with it afterward.

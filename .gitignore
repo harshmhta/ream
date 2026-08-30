@@ -9,6 +9,9 @@ DerivedData/
 xcuserdata/
 *.moved-aside
 
+# Code coverage
+*.profraw
+
 # Swift Package Manager
 .build/
 .swiftpm/

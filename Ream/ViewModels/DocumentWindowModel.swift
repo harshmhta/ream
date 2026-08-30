@@ -100,6 +100,15 @@ final class DocumentWindowModel: ObservableObject {
         search.focusPrevious()
     }
 
+    /// React to a structural page mutation (insert / delete / move / rotate).
+    /// The outline tree and the search service's page-text cache were both
+    /// derived from the previous page list, so rebuild them.
+    func pagesDidChange() {
+        outlineNodes = OutlineNode.tree(from: document.pdfDocument.outlineRoot,
+                                        document: document.pdfDocument)
+        search.pagesDidChange()
+    }
+
     // MARK: - Dark content
 
     func toggleDarkContent() {

@@ -49,10 +49,15 @@ enum PDFViewAction {
     case fitWidth
     case fitPage
     case setViewMode(ViewMode)
-    case goToPage(Int)          // zero-based page index
+    /// Scroll the view so the given 0-based page index is visible.
+    case goToPage(Int)
     case nextPage
     case previousPage
     case togglePresentation
+    /// Re-layout after a programmatic page mutation (insert/remove/reorder).
+    /// PDFKit does not always redraw when the document's page list changes out
+    /// from under it, so page ops nudge the view through this action.
+    case reload
 }
 
 /// Bridges SwiftUI commands to the underlying AppKit `PDFView`.
@@ -105,6 +110,8 @@ final class PDFViewCoordinator: ObservableObject {
             if pdfView.canGoToPreviousPage { pdfView.goToPreviousPage(nil) }
         case .togglePresentation:
             togglePresentation(pdfView)
+        case .reload:
+            reloadDocumentLayout()
         }
     }
 
@@ -143,10 +150,15 @@ final class PDFViewCoordinator: ObservableObject {
     }
 
     /// The zero-based index of the page currently in view (best effort).
+    ///
+    /// `nil` when the current page is no longer part of the document — page ops
+    /// can delete the page under the reader, and `index(for:)` answers
+    /// `NSNotFound` (a very large positive number, not a negative one) for a
+    /// detached page.
     var currentPageIndex: Int? {
         guard let page = pdfView.currentPage, let doc = pdfView.document else { return nil }
         let index = doc.index(for: page)
-        return index >= 0 ? index : nil
+        return (index >= 0 && index < doc.pageCount) ? index : nil
     }
 
     // MARK: - Search highlighting
@@ -178,10 +190,37 @@ final class PDFViewCoordinator: ObservableObject {
     func refreshRendering() {
         guard let document = pdfView.document else { return }
         let destination = pdfView.currentDestination
+        reloadDocument(document)
+        if let destination { pdfView.go(to: destination) }
+    }
+
+    /// Rebuild PDFKit's page layout after a structural page edit
+    /// (insert/remove/reorder/rotate), which PDFKit does not always do on its
+    /// own when the document mutates underneath it.
+    ///
+    /// Unlike ``refreshRendering()`` this restores the reader by *page index*
+    /// rather than by `PDFDestination`: the page they were on may have just been
+    /// deleted, and a destination pointing at a detached page navigates nowhere.
+    private func reloadDocumentLayout() {
+        guard let document = pdfView.document else { return }
+        let previousIndex = currentPageIndex
+        reloadDocument(document)
+        if let previousIndex, document.pageCount > 0 {
+            goToPage(min(previousIndex, document.pageCount - 1), in: pdfView)
+        }
+        pdfView.layoutDocumentView()
+    }
+
+    /// Swap `document` out and back in to force a full relayout/re-render,
+    /// restoring the view state PDFKit drops on the way (layout mode and zoom).
+    private func reloadDocument(_ document: PDFKit.PDFDocument) {
+        let autoScales = pdfView.autoScales
+        let scaleFactor = pdfView.scaleFactor
         pdfView.document = nil
         pdfView.document = document
         syncViewMode()
-        if let destination { pdfView.go(to: destination) }
+        pdfView.autoScales = autoScales
+        if !autoScales { pdfView.scaleFactor = scaleFactor }
     }
 
     // MARK: - Reading-position memory
@@ -191,12 +230,9 @@ final class PDFViewCoordinator: ObservableObject {
     /// Captures view geometry only; the caller sets `invertContent` (a document
     /// property, not a view-geometry one).
     func captureReadingState() -> DocumentReadingState? {
-        guard let document = pdfView.document else { return nil }
+        guard pdfView.document != nil else { return nil }
         var state = DocumentReadingState()
-        if let page = pdfView.currentPage {
-            let idx = document.index(for: page)
-            if idx >= 0 { state.pageIndex = idx }
-        }
+        if let index = currentPageIndex { state.pageIndex = index }
         if let dest = pdfView.currentDestination {
             state.scrollPointX = dest.point.x
             state.scrollPointY = dest.point.y

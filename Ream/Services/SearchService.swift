@@ -54,15 +54,27 @@ final class SearchService: ObservableObject {
     }
 
     /// Cached page text, extracted once per document. Page `.string` extraction
-    /// walks the content stream and is expensive; the text does not change while
-    /// a document is open (v0.1 is read-only), so we extract lazily on the first
+    /// walks the content stream and is expensive, and the text only changes when
+    /// pages are added/removed/reordered, so we extract lazily on the first
     /// search and reuse it for every subsequent keystroke instead of re-walking
-    /// all pages each time.
+    /// all pages each time. Page ops invalidate it via ``pagesDidChange()``.
     private var pageTextCache: [(index: Int, text: String)]?
 
     func attach(to document: PDFKit.PDFDocument) {
         self.document = document
         pageTextCache = nil
+    }
+
+    /// Drop the cached page text after a structural page edit (insert / delete /
+    /// move / rotate) and re-run the active query.
+    ///
+    /// Both halves matter: the cache holds text keyed by page *index*, and every
+    /// live ``SearchResult`` stores the index it was found on — after a delete or
+    /// reorder those indices address different pages, so leaving the results up
+    /// would jump the reader to the wrong page (or a page that no longer exists).
+    func pagesDidChange() {
+        pageTextCache = nil
+        runSearch(query: query, options: options)
     }
 
     /// Extract (and cache) the non-empty text of every page, on the main actor
