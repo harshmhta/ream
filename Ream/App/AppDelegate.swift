@@ -41,14 +41,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             : sessionURLs
         guard !urls.isEmpty else { return }
 
-        // URLs the system already restored / the user already opened. Compare by
-        // standardized file path so we never open a second window for a document
-        // that is already on screen.
+        // Documents the system already restored / the user already opened. See
+        // ``SessionRestore`` for why the skipped ones still need releasing.
         let openPaths = Set(controller.documents.compactMap {
-            $0.fileURL?.standardizedFileURL.path
+            $0.fileURL.map(SessionRestore.canonicalPath)
         })
+        let plan = SessionRestore.plan(sessionURLs: urls, alreadyOpen: openPaths)
 
-        for url in urls where !openPaths.contains(url.standardizedFileURL.path) {
+        // Already on screen (or a duplicate): we never open it, so nothing else
+        // will balance the security scope the bookmark resolve started.
+        for url in plan.release {
+            RecentDocumentStore.shared.stopAccessing(url)
+        }
+
+        for url in plan.open {
             controller.openDocument(withContentsOf: url, display: true) { _, _, _ in
                 // The document now holds its own access; release the scope the
                 // bookmark resolve started so we don't leak one per restored tab.
