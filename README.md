@@ -14,11 +14,13 @@ API keys.
 ---
 
 > [!NOTE]
-> **Status: v0.1 alpha — "Better than Preview."** This is the foundation
-> release: a fast, native PDFKit-based viewer with a document-based app shell,
-> tabs, and the seams (command palette, portable core library) that the rest of
-> the app is built on. Editing, annotations, and page operations are on the
-> roadmap below.
+> **Status: v0.1 alpha — "Better than Preview."** Everything in the v0.1
+> milestone of [`pdf-editor-scope.md`](pdf-editor-scope.md) has landed: the
+> viewer (tabs, content-aware dark mode, full-text search), annotations, page
+> management, compress-to-target-size, images↔PDF, the metadata editor, and
+> password add/remove. It is alpha software — expect rough edges — but it is no
+> longer just a viewer. True in-place text editing (the v1.0 flagship) has not
+> started.
 
 ## Screenshot
 
@@ -39,15 +41,65 @@ API keys.
 - **BYO intelligence.** AI is opt-in, keys live in the macOS Keychain, and it
   works with fully local models for the privacy purists.
 
-## What works today (v0.1)
+## What works today
 
-- Open PDFs via **File → Open**, drag-and-drop, or double-click in Finder.
-- Fast rendering via **PDFKit** (`PDFView`) with continuous vertical scroll.
-- Zoom: **In (⌘+) / Out (⌘−) / Actual Size (⌘0) / Fit Page (⌘1) / Fit Width (⌘2)**.
-- Document-based architecture: multiple windows, tabs, Autosave/Versions, and
-  reopen-last-document on relaunch.
-- **⌘K command palette** shell — the registration surface every future feature
-  plugs into.
+**Reading**
+
+- Open via **File → Open**, drag-and-drop, or double-click in Finder. Native
+  window **tabs** (⌘T to open in a new tab, ⌘⇧] / ⌘⇧[ to cycle), Autosave and
+  Versions, and reopen-last-session on relaunch — including each document's
+  page, scroll position and zoom.
+- **Content-aware dark mode (⌘⇧I)** — inverts white paper and black text without
+  wrecking colour photos, applied per page at render time. It never touches the
+  saved bytes.
+- **Full-text search (⌘F, ⌘G / ⌘⇧G)** with whole-word, case-sensitive and regex
+  toggles, and a results list showing the page and a one-line preview.
+- Left inspector: **thumbnails**, **outline/bookmarks**, and **search results**.
+- Layouts: single page, continuous, two-page spread, book (correct odd/even
+  cover), full screen and presentation mode. Zoom **In (⌘+) / Out (⌘−) /
+  Actual Size (⌘0) / Fit Page (⌘1) / Fit Width (⌘2)**.
+- Copy de-hyphenates and re-joins wrapped lines, so pasted text is not full of
+  line-break garbage.
+
+**Annotating**
+
+- Highlight (⌘⇧H), underline, strikethrough, squiggly; **ink** with smoothing
+  and an eraser; rectangle, ellipse, line, arrow, polygon and polyline; sticky
+  notes (⌘⇧N), free text and callouts; a stamp library with dynamic
+  (date/name) stamps.
+- Annotation inspector, ⌃1–⌃5 colour swatches, **flatten** (all or selected),
+  and **XFDF import/export** for round-tripping with other readers.
+
+**Pages**
+
+- **Manage Pages (⌘⇧M)** — a thumbnail grid with drag-reorder, rotate, delete,
+  duplicate and extract.
+- **Merge** several PDFs (including interleave, for duplex scans split across
+  two files), **split** by page ranges / every N pages / bookmarks, and
+  **insert** blank pages, pages from another PDF, or images.
+- Every page operation is undoable (⌘Z).
+
+**Convert & export**
+
+- **Compress (⌃⌘C)** with quality presets or a **target file size** — a binary
+  search over resolution and quality lands at or just under the size you ask
+  for.
+- **Images → PDF (⌥⌘I)** from HEIC/PNG/JPEG/TIFF, sized to the image or to
+  US Letter / A4.
+- **PDF → images (⌘⇧E)** as PNG/JPEG/TIFF at a chosen DPI, optionally zipped.
+
+**Documents & security**
+
+- **Document properties (⌘I)** — title/author/subject/keywords, plus file and
+  page statistics.
+- **Encrypt** with user/owner passwords and permission flags (AES-128, the
+  strongest the native writer emits), **remove password**, and **strip all
+  metadata** (Info dictionary, XMP, thumbnails, annotations, prior versions).
+
+**Everywhere**
+
+- **⌘K command palette** — every action above is registered and acts on the
+  focused window.
 
 ## Building from source
 
@@ -72,14 +124,14 @@ Or headlessly:
 
 ## Roadmap
 
-Ream ships in phases. v0.1 is the foundation; each phase adds a chunk of the
-scope described in [`pdf-editor-scope.md`](pdf-editor-scope.md).
+Ream ships in phases, following §15 of
+[`pdf-editor-scope.md`](pdf-editor-scope.md). **v0.1 is complete**; the table
+below tracks what is next.
 
 | Phase    | Theme                    | Highlights |
 |----------|--------------------------|------------|
-| **v0.1** | _Better than Preview_ ✅  | Viewer (tabs, continuous scroll, zoom), document shell, ⌘K palette seam, portable core |
-| v0.5     | _Cancel iLovePDF_        | Annotations, page management (merge/split/reorder/rotate), compress with target-size, images↔PDF, metadata editor, password add/remove |
-| v0.9     | _Convert everything_     | OCR (Vision), batch ops, watermarks/page numbers, form filling, signature library, conversion suite (→Markdown/images/text), CLI, Quick Look |
+| **v0.1** | _Better than Preview_ ✅  | Viewer (tabs, dark-content mode, search), annotations, page management (merge/split/reorder/rotate), compress with target-size, images↔PDF, metadata editor, password add/remove — plus the document shell, ⌘K palette and portable core they build on |
+| v0.5     | _Cancel iLovePDF_        | OCR (Vision), batch operations, watermarks/page numbers/headers, form filling, signature library, →Markdown / →text export, CLI, Quick Look extension |
 | v1.0     | _Cancel Acrobat_ 🎯       | **True in-place text/image editing**, form creation, true redaction, document compare, sanitize, bookmarks editor, Shortcuts |
 | v1.5     | _The AI Update_          | BYO-key provider layer, chat-with-PDF (cited), summarize/explain/translate, semantic search, AI form-fill, table extraction |
 | v2.0     | _Power & Trust_          | Cryptographic signing + verification, multi-doc chat, data extraction pipelines, watch folders, plugin API |
