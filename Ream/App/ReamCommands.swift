@@ -9,6 +9,7 @@ struct ReamCommands: Commands {
     @FocusedValue(\.pdfReferenceDocument) private var document
     @FocusedValue(\.documentActions) private var actions
     @FocusedValue(\.conversionCoordinator) private var conversion
+    @FocusedValue(\.pageOps) private var pageOps
     @Environment(\.undoManager) private var undoManager
     @ObservedObject private var palette = CommandPaletteService.shared
 
@@ -24,10 +25,26 @@ struct ReamCommands: Commands {
             Divider()
         }
 
-        // File menu: metadata + security. Grouped after the system Info item so
-        // ⌘I lands naturally. All target the focused window via @FocusedValue and
-        // disable when no document is key.
+        // File menu: page operations, then metadata + security. Grouped after
+        // the system Save/Import cluster (and the Info item so ⌘I lands
+        // naturally). All target the focused window via @FocusedValue and disable
+        // when no document is key.
         CommandGroup(after: .importExport) {
+            Divider()
+
+            Button("Manage Pages…") { pageOps?.showManagePages() }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(pageOps == nil || document?.isLocked == true)
+
+            Button("Merge PDFs…") { pageOps?.showMerge() }
+                .disabled(pageOps == nil || document?.isLocked == true)
+
+            Button("Split PDF…") { pageOps?.showSplit() }
+                .disabled(pageOps == nil || document?.isLocked == true)
+
+            Button("Insert Pages…") { pageOps?.showInsert() }
+                .disabled(pageOps == nil || document?.isLocked == true)
+
             Divider()
 
             Button("Document Properties…") { actions?.present(.properties) }
