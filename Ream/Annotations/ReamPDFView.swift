@@ -1,8 +1,10 @@
 import PDFKit
 import AppKit
+import ReamCore
 
 /// A `PDFView` subclass that adds annotation authoring on top of PDFKit's
-/// built-in rendering, selection, and scrolling.
+/// built-in rendering, selection, and scrolling — and copies clean,
+/// de-hyphenated text.
 ///
 /// Interaction model, by tool:
 /// - `.select`  → PDFKit's own text selection + click an annotation to select it.
@@ -18,11 +20,39 @@ import AppKit
 ///
 /// A transparent live-preview is drawn on top while dragging so the user sees
 /// the shape before it is committed as a real `PDFAnnotation`.
-final class ReamPDFView: PDFView {
+final class ReamPDFView: PDFView, NSMenuItemValidation {
 
     /// Set by the SwiftUI wrapper. All authoring routes through the controller
     /// so undo/inspector/save stay consistent.
     weak var annotationController: AnnotationController?
+
+    // MARK: Clean copy (de-hyphenation)
+
+    override func copy(_ sender: Any?) {
+        // Let PDFKit do its normal copy first — that populates the pasteboard
+        // with all representations (RTF, PDF data, image data for area
+        // selections) that rich-text and image targets expect.
+        super.copy(sender)
+
+        // Then, only for text selections, replace the *plain-text* flavor with a
+        // de-hyphenated, paragraph-joined version (ReamCore/TextReflow). Other
+        // flavors (RTF/PDF/image) are left intact, and non-text selections are
+        // untouched.
+        guard let raw = currentSelection?.string, !raw.isEmpty else { return }
+        let cleaned = TextReflow.dehyphenate(raw)
+        NSPasteboard.general.setString(cleaned, forType: .string)
+    }
+
+    /// Only intercept validation of the Copy item; everything else defers to
+    /// PDFView. Copy stays enabled whenever there is *any* selection (text or
+    /// area) so image/marquee copies still work — `copy(_:)` only rewrites the
+    /// text flavor and otherwise falls through to `super`.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(copy(_:)) {
+            return currentSelection != nil
+        }
+        return true
+    }
 
     // Drag state.
     private var dragOrigin: CGPoint?          // page space

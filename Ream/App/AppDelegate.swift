@@ -2,15 +2,24 @@ import AppKit
 
 /// Application delegate for lifecycle hooks that SwiftUI does not expose.
 ///
-/// Its main job in v0.1 is "reopen last document on relaunch": if macOS did not
+/// Its main job in v0.1 is "reopen last session on relaunch": if macOS did not
 /// restore any document windows (e.g. the user has window restoration disabled),
-/// we open the most recently viewed PDF ourselves.
+/// we reopen every document that was open when the app last quit.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Give the system a moment to perform its own window restoration before
-        // we decide whether we need to reopen the last document manually.
-        DispatchQueue.main.async { [weak self] in
-            self?.reopenLastDocumentIfNeeded()
+        // Allow multiple PDFs to live as tabs in one window. Whether documents
+        // open as tabs or separate windows then follows the macOS "Prefer tabs"
+        // system setting — the same native behaviour as Preview.
+        NSWindow.allowsAutomaticWindowTabbing = true
+
+        // SwiftUI's `DocumentGroup` performs its own state restoration of the
+        // last open documents. We only reopen manually as a *fallback* for when
+        // the system restored nothing (e.g. "Close windows when quitting an app"
+        // is on). Restoration is asynchronous, so we wait briefly and then only
+        // open session URLs that are not already open — otherwise we would
+        // duplicate every window the system just restored.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.reopenLastSessionIfNeeded()
         }
     }
 
@@ -21,12 +30,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
-    private func reopenLastDocumentIfNeeded() {
+    private func reopenLastSessionIfNeeded() {
         let controller = NSDocumentController.shared
-        // If a document was already restored or opened, do nothing.
-        guard controller.documents.isEmpty else { return }
 
-        guard let url = RecentDocumentStore.shared.lastDocumentURL() else { return }
-        controller.openDocument(withContentsOf: url, display: true) { _, _, _ in }
+        // Prefer the full last session (all tabs); fall back to the single most
+        // recent document for backwards compatibility.
+        let sessionURLs = RecentDocumentStore.shared.sessionURLs()
+        let urls = sessionURLs.isEmpty
+            ? [RecentDocumentStore.shared.lastDocumentURL()].compactMap { $0 }
+            : sessionURLs
+        guard !urls.isEmpty else { return }
+
+        // URLs the system already restored / the user already opened. Compare by
+        // standardized file path so we never open a second window for a document
+        // that is already on screen.
+        let openPaths = Set(controller.documents.compactMap {
+            $0.fileURL?.standardizedFileURL.path
+        })
+
+        for url in urls where !openPaths.contains(url.standardizedFileURL.path) {
+            controller.openDocument(withContentsOf: url, display: true) { _, _, _ in
+                // The document now holds its own access; release the scope the
+                // bookmark resolve started so we don't leak one per restored tab.
+                RecentDocumentStore.shared.stopAccessing(url)
+            }
+        }
     }
 }

@@ -23,7 +23,7 @@ enum ConversionCommands {
             PaletteCommand(id: "convert.imagesToPDF",
                            title: "New PDF from Images…",
                            category: "Convert & Export",
-                           keyboardShortcut: "⇧⌘I") {
+                           keyboardShortcut: "⌥⌘I") {
                 ConversionCoordinator.active?.presentImagesToPDF()
             },
             PaletteCommand(id: "convert.pdfToImages",

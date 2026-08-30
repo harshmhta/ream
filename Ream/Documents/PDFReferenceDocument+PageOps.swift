@@ -155,13 +155,48 @@ extension PDFReferenceDocument {
     /// `index`.
     func insertPages(_ pages: [PDFPage], at index: Int, undoManager: UndoManager?, actionName: String = "Insert Pages") {
         guard !pages.isEmpty else { return }
+        let incoming = insertableCopies(of: pages)
         let clamped = min(max(index, 0), pdfDocument.pageCount)
         mutatePages(actionName: actionName, undoManager: undoManager) {
-            for (offset, page) in pages.enumerated() {
-                let copy = (page.copy() as? PDFPage) ?? page
-                pdfDocument.insert(copy, at: min(clamped + offset, pdfDocument.pageCount))
+            for (offset, page) in incoming.enumerated() {
+                pdfDocument.insert(page, at: min(clamped + offset, pdfDocument.pageCount))
             }
         }
+    }
+
+    /// Copy `pages` for insertion, re-vending foreign ones through Ream's
+    /// document delegate so they come back as ``InvertingPDFPage`` instances.
+    ///
+    /// Pages that arrive from another file (or from `PDFPage(image:)`) belong to
+    /// a document with no Ream delegate, so they are plain `PDFPage`s — and a
+    /// plain page has no `draw` override, which silently opts it out of
+    /// content-aware dark mode once it lands in this document. PDFKit only picks
+    /// a page's class while *parsing*, so the only way to change it is to
+    /// round-trip the pages through a document that vends the subclass. Copies of
+    /// pages already in this document keep their class, so the common paths
+    /// (duplicate, undo) skip the round-trip entirely.
+    ///
+    /// The re-parsed pages are copied **before** this returns: a `PDFPage` whose
+    /// document has been deallocated copies as a *blank* page, so deferring the
+    /// copy to the insert loop would silently insert empty sheets.
+    ///
+    /// Falls back to plain copies if the round-trip fails — an inserted page that
+    /// does not invert is far better than a lost one.
+    private func insertableCopies(of pages: [PDFPage]) -> [PDFPage] {
+        func plainCopies() -> [PDFPage] { pages.map { ($0.copy() as? PDFPage) ?? $0 } }
+        guard pages.contains(where: { !($0 is InvertingPDFPage) }) else { return plainCopies() }
+
+        let staging = PDFKit.PDFDocument()
+        for page in pages {
+            guard let copy = page.copy() as? PDFPage else { return plainCopies() }
+            staging.insert(copy, at: staging.pageCount)
+        }
+        guard let data = staging.dataRepresentation(),
+              let reparsed = InvertingPDFDocument(data: data) else { return plainCopies() }
+        reparsed.delegate = AnnotationDocumentDelegate.shared
+
+        let adopted = (0..<reparsed.pageCount).compactMap { reparsed.page(at: $0)?.copy() as? PDFPage }
+        return adopted.count == pages.count ? adopted : plainCopies()
     }
 
     /// Normalize any rotation to the {0, 90, 180, 270} PDFKit accepts.
