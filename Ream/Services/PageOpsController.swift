@@ -2,24 +2,11 @@ import SwiftUI
 import PDFKit
 import AppKit
 import UniformTypeIdentifiers
+import ReamCore
 
-/// A thread-safe cancellation flag shared with a background operation.
-///
-/// The UI (main actor) calls ``cancel()``; the worker polls ``isCancelled`` from
-/// its background queue. A lock keeps the cross-thread `Bool` access race-free.
-final class CancellationToken: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cancelledFlag = false
-
-    var isCancelled: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return cancelledFlag
-    }
-
-    func cancel() {
-        lock.lock(); cancelledFlag = true; lock.unlock()
-    }
-}
+// Page ops share ``ReamCore/CancellationToken`` with the conversion engines: the
+// UI (main actor) calls `cancel()`, the worker polls `isCancelled` from its
+// background queue, and an internal lock keeps that cross-thread access race-free.
 
 /// State driving the progress panel shown for operations that may exceed ~1s.
 struct OperationProgress {
