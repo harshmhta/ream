@@ -73,9 +73,15 @@ These are non-negotiable and a PR that violates them will be rejected:
 ```bash
 ./scripts/test.sh                                   # generate + build + all tests
 # or, from Xcode: ⌘U
-# or, unit tests only (what CI runs):
+# or, the two suites CI runs, separately:
+swift test --package-path ReamCore                  # ReamCore package tests
 xcodebuild -scheme Ream -destination "platform=macOS" -only-testing:ReamTests test
 ```
+
+> **Note on `ReamCore`:** it is a SwiftPM package with its own test target, and
+> the app scheme does not include it — `xcodebuild test` (and ⌘U) will **not**
+> run it. `./scripts/test.sh` and CI run `swift test --package-path ReamCore`
+> separately; do the same before pushing changes to the core.
 
 > **Note on UI tests:** `ReamUITests` require a code-signing identity to inject
 > their test bundle into the app, so they run locally (Xcode signs with your

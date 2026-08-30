@@ -40,10 +40,18 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # `ReamCore` is a SwiftPM package, and the app scheme only carries the
+      # `ReamTests` bundle — `xcodebuild test` never runs the package's own test
+      # target. Run it directly, before the (slower) app build, so a regression in
+      # the portable core (compression, conversion, search, text reflow) fails the
+      # build instead of landing unnoticed.
+      - name: Test ReamCore package
+        run: swift test --package-path ReamCore
+
       # CI runners have no signing identity, so build/test ad-hoc ("Sign to Run
-      # Locally"). Unit tests (ReamTests + ReamCore) run headlessly and reliably
-      # under ad-hoc signing. UI tests require a real signing identity to inject
-      # their bundle, so they are excluded here and run locally instead.
+      # Locally"). Unit tests run headlessly and reliably under ad-hoc signing.
+      # UI tests require a real signing identity to inject their bundle, so they
+      # are excluded here and run locally instead.
       - name: Build and test
         run: |
           set -o pipefail
