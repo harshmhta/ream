@@ -76,7 +76,10 @@ struct PDFSyntaxParser {
         }
     }
 
-    mutating func parseIndirectObject(expected: PDFObjectReference? = nil) throws -> (PDFObjectReference, PDFObject) {
+    mutating func parseIndirectObject(
+        expected: PDFObjectReference? = nil,
+        resolveStreamLength: ((PDFObject) throws -> Int?)? = nil
+    ) throws -> (PDFObjectReference, PDFObject) {
         skipSpaceAndComments()
         let start = index
         guard let number = Int(parseRegularToken()) else {
@@ -105,6 +108,9 @@ struct PDFSyntaxParser {
                 else if peek() == 0x0A { index += 1 }
                 let streamStart = index
                 var length = dictionary["Length"]?.intValue
+                if length == nil, let lengthObject = dictionary["Length"], let resolveStreamLength {
+                    length = try resolveStreamLength(lengthObject)
+                }
                 if let directLength = length,
                    directLength >= 0,
                    streamStart + directLength <= bytes.count {
@@ -116,10 +122,10 @@ struct PDFSyntaxParser {
                     guard let end = findKeyword("endstream", from: streamStart) else {
                         throw PDFObjectError.corruptStream("missing endstream")
                     }
-                    var streamEnd = end
-                    if streamEnd > streamStart, bytes[streamEnd - 1] == 0x0A { streamEnd -= 1 }
-                    if streamEnd > streamStart, bytes[streamEnd - 1] == 0x0D { streamEnd -= 1 }
-                    length = streamEnd - streamStart
+                    // Without a trustworthy /Length there is no principled way
+                    // to distinguish a payload CR/LF from the endstream EOL.
+                    // Preserve every byte instead of silently deleting data.
+                    length = end - streamStart
                     index = end + 9
                 }
                 let end = streamStart + (length ?? 0)

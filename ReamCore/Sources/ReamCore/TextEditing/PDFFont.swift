@@ -5,6 +5,7 @@ struct PDFDecodedGlyph {
     let text: String
     let width: Double
     let isWordSpace: Bool
+    let hasReliableUnicode: Bool
 }
 
 final class PDFFont {
@@ -44,7 +45,10 @@ final class PDFFont {
             descriptor = try document.dictionary(object["FontDescriptor"])
         }
         self.ascent = descriptor?["Ascent"]?.doubleValue ?? 800
-        self.descent = descriptor?["Descent"]?.doubleValue ?? -200
+        let descriptorDescent = descriptor?["Descent"]?.doubleValue ?? -200
+        // Chrome and other producers sometimes store descent as a positive
+        // magnitude even though PDF specifies a negative value below baseline.
+        self.descent = descriptorDescent > 0 ? -descriptorDescent : descriptorDescent
         let embeddedCMap = try Self.embeddedCMap(descriptor: descriptor, document: document)
         self.embeddedGlyphsByUnicode = embeddedCMap
 
@@ -59,7 +63,7 @@ final class PDFFont {
             } else {
                 codeToCID = [:]
             }
-            let widthInfo = Self.compositeWidths(descendant ?? [:])
+            let widthInfo = try Self.compositeWidths(descendant ?? [:], document: document)
             widths = widthInfo.widths
             defaultWidth = widthInfo.defaultWidth
             simpleUnicodeByCode = [:]
@@ -91,20 +95,26 @@ final class PDFFont {
                 }
                 let actual = code ?? bytes.subdata(in: cursor..<min(bytes.count, cursor + defaultLength))
                 let cid = codeToCID[actual] ?? Self.bigEndianInt(actual)
-                let text = unicodeByCode[actual] ?? UnicodeScalar(cid).map(String.init) ?? "\u{FFFD}"
+                let mapped = unicodeByCode[actual]
+                // CIDs identify glyphs in a collection; they are not Unicode
+                // scalar values, even for Identity-H/V encodings.
+                let text = mapped ?? "\u{FFFD}"
                 output.append(PDFDecodedGlyph(code: actual, text: text,
                                               width: widths[cid] ?? defaultWidth,
-                                              isWordSpace: text == " "))
+                                              isWordSpace: text == " ",
+                                              hasReliableUnicode: mapped != nil))
                 usedCodes.insert(actual)
                 cursor += actual.count
             }
         } else {
             for byte in bytes {
                 let code = Data([byte])
-                let text = unicodeByCode[code] ?? simpleUnicodeByCode[Int(byte)] ?? "\u{FFFD}"
+                let mapped = unicodeByCode[code] ?? simpleUnicodeByCode[Int(byte)]
+                let text = mapped ?? "\u{FFFD}"
                 output.append(PDFDecodedGlyph(code: code, text: text,
                                               width: widths[Int(byte)] ?? defaultWidth,
-                                              isWordSpace: byte == 32 || text == " "))
+                                              isWordSpace: byte == 32 || text == " ",
+                                              hasReliableUnicode: mapped != nil))
                 usedCodes.insert(code)
             }
         }
@@ -241,28 +251,28 @@ final class PDFFont {
         return (result, missing)
     }
 
-    private static func compositeWidths(_ descendant: [String: PDFObject])
+    private static func compositeWidths(_ descendant: [String: PDFObject], document: PDFParsedDocument) throws
         -> (widths: [Int: Double], defaultWidth: Double) {
-        let values = descendant["W"]?.arrayValue ?? []
+        let values = try document.dereference(descendant["W"])?.arrayValue ?? []
         var output: [Int: Double] = [:]
         var cursor = 0
         while cursor < values.count {
-            guard let first = values[cursor].intValue else { cursor += 1; continue }
+            guard let first = try document.dereference(values[cursor])?.intValue else { cursor += 1; continue }
             cursor += 1
             guard cursor < values.count else { break }
-            if let array = values[cursor].arrayValue {
+            if let array = try document.dereference(values[cursor])?.arrayValue {
                 for (offset, width) in array.enumerated() {
-                    if let width = width.doubleValue { output[first + offset] = width }
+                    if let width = try document.dereference(width)?.doubleValue { output[first + offset] = width }
                 }
                 cursor += 1
             } else if cursor + 1 < values.count,
-                      let last = values[cursor].intValue,
-                      let width = values[cursor + 1].doubleValue {
+                      let last = try document.dereference(values[cursor])?.intValue,
+                      let width = try document.dereference(values[cursor + 1])?.doubleValue {
                 if last >= first { for cid in first...last { output[cid] = width } }
                 cursor += 2
             } else { cursor += 1 }
         }
-        return (output, descendant["DW"]?.doubleValue ?? 1000)
+        return (output, try document.dereference(descendant["DW"])?.doubleValue ?? 1000)
     }
 
     private static func embeddedCMap(descriptor: [String: PDFObject]?, document: PDFParsedDocument) throws

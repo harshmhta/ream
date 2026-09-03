@@ -91,6 +91,38 @@ final class PDFObjectAndEditingTests: XCTestCase {
         XCTAssertEqual(try PDFTextEditor.open(data: pdf).textRuns(onPage: 0).first?.text, "Scan")
     }
 
+    func testBrokenStartXRefEditWritesCompleteRepairWithoutInvalidPrev() throws {
+        let original = PDFTestFiles.classic(content: "BT /F1 12 Tf (Scan) Tj ET")
+        let damaged = try XCTUnwrap(PDFTestFiles.replacingFinalStartXRef(in: original, with: 1))
+        let editor = try PDFTextEditor.open(data: damaged)
+        let run = try XCTUnwrap(editor.textRuns(onPage: 0).first)
+        let edited = try editor.replaceText(of: run, with: "Span")
+
+        XCTAssertTrue(edited.starts(with: damaged))
+        let repaired = try PDFParsedDocument(data: edited)
+        XCTAssertFalse(repaired.needsFullXRefRepair)
+        XCTAssertNil(repaired.trailer["Prev"], "the repaired xref must not depend on offset 1")
+        XCTAssertEqual(try PDFTextEditor.open(data: edited).textRuns(onPage: 0).first?.text, "Span")
+    }
+
+    func testIndirectStreamLengthPreservesCompressedPayloadEndingInLineFeed() throws {
+        let plainPrefix = Data("BT /F1 12 Tf (Indirect) Tj ET\n%".utf8)
+        let plain = plainPrefix + Data([0x00, 0xE7])
+        let compressed = zlib(plain)
+        XCTAssertEqual(compressed.last, 0x0A, "fixture must exercise a payload LF immediately before endstream")
+        let pdf = PDFTestFiles.binaryObjects([
+            1: Data("<< /Type /Catalog /Pages 2 0 R >>".utf8),
+            2: Data("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".utf8),
+            3: Data("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".utf8),
+            4: Data("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".utf8),
+            5: PDFTestFiles.stream(compressed, length: "6 0 R", extra: "/Filter /FlateDecode"),
+            6: Data(String(compressed.count).utf8)
+        ])
+        let editor = try PDFTextEditor.open(data: pdf)
+        XCTAssertEqual(try editor.decodedPageContent(onPage: 0), plain)
+        XCTAssertEqual(try editor.textRuns(onPage: 0).first?.text, "Indirect")
+    }
+
     func testPageTreeEnumeratesOrderAndInheritedAttributes() throws {
         let first = "BT /F1 20 Tf 40 100 Td (First) Tj ET"
         let second = "BT /F1 20 Tf 40 100 Td (Second) Tj ET"
@@ -135,11 +167,92 @@ final class PDFObjectAndEditingTests: XCTestCase {
         XCTAssertEqual(try PDFTextEditor.open(data: edited).textRuns(onPage: 0).first?.text, "Helle")
     }
 
-    func testTokenizerSkipsInlineImagePayload() throws {
-        let content = Data("q BI /W 1 /H 1 /BPC 8 /CS /G ID abc EI Q BT /F1 12 Tf (Real) Tj ET".utf8)
+    func testTokenizerSkipsInlineImagePayloadIncludingFakeEIAndTextProgram() throws {
+        let payload = Data("abc EI BT /F1 12 Tf (FAKE) Tj ET xyz".utf8)
+        var content = Data("q BI /W \(payload.count) /H 1 /BPC 8 /CS /G ID ".utf8)
+        content.append(payload)
+        content.append(Data(" EI Q BT /F1 12 Tf (Real) Tj ET".utf8))
         let operations = try PDFContentTokenizer.operations(in: content)
         XCTAssertEqual(operations.filter { $0.name == "Tj" }.count, 1)
-        XCTAssertFalse(operations.contains { $0.name == "abc" })
+        XCTAssertEqual(operations.filter { $0.name == "Tj" }.first?.operands.last?.strings.first?.data,
+                       Data("Real".utf8))
+        XCTAssertFalse(operations.contains { $0.name == "FAKE" || $0.name == "abc" })
+    }
+
+    func testGraphicsStateQRestoresFontAndTextParameters() throws {
+        let content = "BT /F1 12 Tf (Before) Tj q /F2 24 Tf 5 Tc (Big) Tj Q (After) Tj ET"
+        let pdf = PDFTestFiles.classic(content: content,
+            font: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+            extraFonts: "/F2 << /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>")
+        let runs = try PDFTextEditor.open(data: pdf).textRuns(onPage: 0)
+        XCTAssertEqual(runs.map(\.text), ["Before", "Big", "After"])
+        XCTAssertEqual(runs.map(\.fontSize), [12, 24, 12])
+        XCTAssertEqual(runs.map(\.fontName), ["Helvetica", "Courier", "Helvetica"])
+        XCTAssertEqual(runs[2].userSpaceBounds.width, 25.344, accuracy: 0.001,
+                       "Q must restore character spacing as well as the font")
+    }
+
+    func testCompositeWidthsDereferenceWAndNestedWidthArray() throws {
+        let editor = try PDFTextEditor.open(data: PDFTestFiles.type0IndirectWidths())
+        let run = try XCTUnwrap(editor.textRuns(onPage: 0).first)
+        XCTAssertEqual(run.text, "Hi")
+        XCTAssertEqual(run.userSpaceBounds.width, 15, accuracy: 0.001)
+    }
+
+    func testIdentityHWithoutToUnicodeIsNotExposedAsEditable() throws {
+        let editor = try PDFTextEditor.open(data: PDFTestFiles.type0WithoutToUnicode())
+        XCTAssertTrue(try editor.textRuns(onPage: 0).isEmpty,
+                      "collection-specific CIDs must not be presented as plausible Unicode")
+    }
+
+    func testPositiveDescriptorDescentIsNormalizedBelowBaseline() throws {
+        let content = "BT /F1 24 Tf 1 0 0 1 50 100 Tm (Chrome) Tj ET"
+        let font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /FontDescriptor 6 0 R >>"
+        let pdf = PDFTestFiles.binaryObjects([
+            1: Data("<< /Type /Catalog /Pages 2 0 R >>".utf8),
+            2: Data("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".utf8),
+            3: Data("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".utf8),
+            4: Data(font.utf8), 5: PDFTestFiles.stream(Data(content.utf8)),
+            6: Data("<< /Type /FontDescriptor /FontName /Helvetica /Ascent 750 /Descent 250 >>".utf8)
+        ])
+        let run = try XCTUnwrap(PDFTextEditor.open(data: pdf).textRuns(onPage: 0).first)
+        XCTAssertEqual(run.userSpaceBounds.minY, 94, accuracy: 0.001)
+        XCTAssertEqual(run.userSpaceBounds.height, 24, accuracy: 0.001)
+    }
+
+    func testStringAndOperatorMayStraddleContentsStreamsAndEditSurgically() throws {
+        let original = PDFTestFiles.splitContents([
+            "BT /F1 12 Tf 40 100 Td (Hel", "lo) T", "j ET"
+        ])
+        let editor = try PDFTextEditor.open(data: original)
+        let run = try XCTUnwrap(editor.textRuns(onPage: 0).first)
+        XCTAssertEqual(run.text, "Hello")
+        XCTAssertEqual(run.operandSegments.count, 2)
+
+        let before = try editor.decodedPageContent(onPage: 0)
+        let edited = try editor.replaceText(of: run, with: "Jello")
+        let reopened = try PDFTextEditor.open(data: edited)
+        let editedRun = try XCTUnwrap(reopened.textRuns(onPage: 0).first)
+        let after = try reopened.decodedPageContent(onPage: 0)
+        var expected = before
+        expected.replaceSubrange(run.operandByteRange.range,
+                                 with: after.subdata(in: editedRun.operandByteRange.range))
+        XCTAssertEqual(after, expected)
+        XCTAssertEqual(editedRun.text, "Jello")
+    }
+
+    func testTJLogicalWordKeepsOtherStringsAndKerningByteExact() throws {
+        let original = PDFTestFiles.classic(content: "BT /F1 12 Tf [(Hel) -37 (lo)] TJ ET")
+        let editor = try PDFTextEditor.open(data: original)
+        let runs = try editor.textRuns(onPage: 0)
+        XCTAssertEqual(runs.map(\.text), ["Hel", "lo"])
+        let before = try editor.decodedPageContent(onPage: 0)
+        let edited = try editor.replaceText(of: runs[0], with: "Jel")
+        let reopened = try PDFTextEditor.open(data: edited)
+        let after = try reopened.decodedPageContent(onPage: 0)
+        XCTAssertEqual(String(decoding: after, as: UTF8.self), "BT /F1 12 Tf [(Jel) -37 (lo)] TJ ET")
+        XCTAssertEqual(after.count, before.count)
+        XCTAssertEqual(try reopened.textRuns(onPage: 0).map(\.text), ["Jel", "lo"])
     }
 
     func testASCIIHexASCII85AndRunLengthFilters() throws {
@@ -229,14 +342,92 @@ final class PDFObjectAndEditingTests: XCTestCase {
 
 private enum PDFTestFiles {
     static func classic(content: String, trailerExtras: String = "",
-                        font: String = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>") -> Data {
+                        font: String = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+                        extraFonts: String = "") -> Data {
         objects([
             1: "<< /Type /Catalog /Pages 2 0 R >>",
             2: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-            3: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+            3: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R \(extraFonts) >> >> /Contents 5 0 R >>",
             4: font,
             5: "<< /Length \(content.utf8.count) >>\nstream\n\(content)\nendstream"
         ], trailerExtras: trailerExtras)
+    }
+
+    static func splitContents(_ contents: [String]) -> Data {
+        var objects: [Int: Data] = [
+            1: Data("<< /Type /Catalog /Pages 2 0 R >>".utf8),
+            2: Data("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".utf8),
+            3: Data("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R >> >> /Contents [\(contents.indices.map { "\(5 + $0) 0 R" }.joined(separator: " "))] >>".utf8),
+            4: Data("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".utf8)
+        ]
+        for (index, content) in contents.enumerated() {
+            objects[index + 5] = stream(Data(content.utf8))
+        }
+        return binaryObjects(objects)
+    }
+
+    static func type0IndirectWidths() -> Data {
+        type0Fixture(includeToUnicode: true, widths: "8 0 R", extraObjects: [
+            8: Data("[1 9 0 R]".utf8), 9: Data("[250 500]".utf8)
+        ])
+    }
+
+    static func type0WithoutToUnicode() -> Data {
+        type0Fixture(includeToUnicode: false, widths: "[1 [500 500]]")
+    }
+
+    private static func type0Fixture(includeToUnicode: Bool, widths: String,
+                                     extraObjects: [Int: Data] = [:]) -> Data {
+        let cmap = "1 beginbfchar\n<0001> <0048>\nendbfchar\n1 beginbfchar\n<0002> <0069>\nendbfchar"
+        let toUnicodeEntry = includeToUnicode ? "/ToUnicode 6 0 R" : ""
+        var objects: [Int: Data] = [
+            1: Data("<< /Type /Catalog /Pages 2 0 R >>".utf8),
+            2: Data("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".utf8),
+            3: Data("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".utf8),
+            4: Data("<< /Type /Font /Subtype /Type0 /BaseFont /Test /Encoding /Identity-H /DescendantFonts [7 0 R] \(toUnicodeEntry) >>".utf8),
+            5: stream(Data("BT /F1 20 Tf 40 100 Td <00010002> Tj ET".utf8)),
+            6: stream(Data(cmap.utf8)),
+            7: Data("<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Test /DW 1000 /W \(widths) >>".utf8)
+        ]
+        objects.merge(extraObjects) { _, new in new }
+        return binaryObjects(objects)
+    }
+
+    static func stream(_ data: Data, length: String? = nil, extra: String = "") -> Data {
+        var result = Data("<< \(extra) /Length \(length ?? String(data.count)) >>\nstream\n".utf8)
+        result.append(data)
+        result.appendASCII("\nendstream")
+        return result
+    }
+
+    static func binaryObjects(_ objects: [Int: Data], trailerExtras: String = "") -> Data {
+        var output = Data("%PDF-1.4\n%\u{00E2}\u{00E3}\u{00CF}\u{00D3}\n".utf8), offsets: [Int: Int] = [:]
+        for number in objects.keys.sorted() {
+            offsets[number] = output.count
+            output.appendASCII("\(number) 0 obj\n")
+            output.append(objects[number]!)
+            output.appendASCII("\nendobj\n")
+        }
+        let xref = output.count, size = (objects.keys.max() ?? 0) + 1
+        output.appendASCII("xref\n0 \(size)\n0000000000 65535 f \n")
+        for number in 1..<size {
+            if let offset = offsets[number] {
+                output.appendASCII(String(format: "%010d 00000 n \n", offset))
+            } else {
+                output.appendASCII("0000000000 00000 f \n")
+            }
+        }
+        output.appendASCII("trailer\n<< /Size \(size) /Root 1 0 R \(trailerExtras) >>\nstartxref\n\(xref)\n%%EOF\n")
+        return output
+    }
+
+    static func replacingFinalStartXRef(in data: Data, with offset: Int) -> Data? {
+        guard let marker = data.range(of: Data("startxref\n".utf8), options: .backwards) else { return nil }
+        let start = marker.upperBound
+        guard let end = data[start...].firstIndex(of: 0x0A) else { return nil }
+        var result = data
+        result.replaceSubrange(start..<end, with: Data(String(offset).utf8))
+        return result
     }
 
     static func objects(_ objects: [Int: String], trailerExtras: String = "") -> Data {

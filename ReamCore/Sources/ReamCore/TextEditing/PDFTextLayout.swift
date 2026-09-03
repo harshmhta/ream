@@ -32,6 +32,17 @@ public struct PDFTextRun: Identifiable, Hashable, Sendable {
     let fontKey: String
     let originalCodeBytes: Data
     let operandWasHex: Bool
+    let operandSegments: [PDFRunContentSegment]
+}
+
+struct PDFRunContentSegment: Hashable, Sendable {
+    let contentIndex: Int
+    let byteRange: PDFByteRange
+}
+
+private struct PDFDecodedContent {
+    let content: PDFPageContent
+    let pageRange: Range<Int>
 }
 
 private struct PDFMatrix {
@@ -68,7 +79,30 @@ private struct PDFTextState {
     var textMatrix = PDFMatrix()
     var lineMatrix = PDFMatrix()
     var ctm = PDFMatrix()
-    var graphicsStack: [PDFMatrix] = []
+    var graphicsStack: [PDFGraphicsState] = []
+
+    var graphicsState: PDFGraphicsState {
+        get { PDFGraphicsState(characterSpacing: characterSpacing, wordSpacing: wordSpacing,
+                               horizontalScale: horizontalScale, leading: leading, rise: rise,
+                               fontSize: fontSize, fontKey: fontKey, ctm: ctm) }
+        set {
+            characterSpacing = newValue.characterSpacing; wordSpacing = newValue.wordSpacing
+            horizontalScale = newValue.horizontalScale; leading = newValue.leading
+            rise = newValue.rise; fontSize = newValue.fontSize
+            fontKey = newValue.fontKey; ctm = newValue.ctm
+        }
+    }
+}
+
+private struct PDFGraphicsState {
+    let characterSpacing: Double
+    let wordSpacing: Double
+    let horizontalScale: Double
+    let leading: Double
+    let rise: Double
+    let fontSize: Double
+    let fontKey: String?
+    let ctm: PDFMatrix
 }
 
 final class PDFTextLayoutEngine {
@@ -84,13 +118,21 @@ final class PDFTextLayoutEngine {
         let pageFonts = try fonts(on: page)
         var state = PDFTextState()
         var runs: [PDFTextRun] = []
+        var joined = Data()
+        var decodedContents: [PDFDecodedContent] = []
         for content in page.contents {
             let decoded = try PDFStreamFilters.decode(content.stream)
-            let operations = try PDFContentTokenizer.operations(in: decoded)
-            for operation in operations {
-                try apply(operation, content: content, decoded: decoded,
-                          page: page, pageFonts: pageFonts, state: &state, runs: &runs)
-            }
+            let start = joined.count
+            joined.append(decoded)
+            decodedContents.append(PDFDecodedContent(content: content,
+                                                      pageRange: start..<joined.count))
+        }
+        // A /Contents array is one logical content stream. Do not synthesize a
+        // separator: PDF tokens and strings are permitted to cross boundaries.
+        let operations = try PDFContentTokenizer.operations(in: joined)
+        for operation in operations {
+            try apply(operation, contents: decodedContents, decoded: joined,
+                      page: page, pageFonts: pageFonts, state: &state, runs: &runs)
         }
         return runs
     }
@@ -113,7 +155,7 @@ final class PDFTextLayoutEngine {
     }
 
     private func apply(_ operation: PDFContentOperation,
-                       content: PDFPageContent,
+                       contents: [PDFDecodedContent],
                        decoded: Data,
                        page: PDFPageInfo,
                        pageFonts: [String: PDFFont],
@@ -121,8 +163,8 @@ final class PDFTextLayoutEngine {
                        runs: inout [PDFTextRun]) throws {
         let numbers = operation.operands.compactMap { $0.object.doubleValue }
         switch operation.name {
-        case "q": state.graphicsStack.append(state.ctm)
-        case "Q": if let restored = state.graphicsStack.popLast() { state.ctm = restored }
+        case "q": state.graphicsStack.append(state.graphicsState)
+        case "Q": if let restored = state.graphicsStack.popLast() { state.graphicsState = restored }
         case "cm" where numbers.count >= 6:
             state.ctm = state.ctm.multiplied(by: PDFMatrix(Array(numbers.suffix(6))))
         case "BT": state.textMatrix = PDFMatrix(); state.lineMatrix = PDFMatrix()
@@ -145,7 +187,7 @@ final class PDFTextLayoutEngine {
         case "T*": nextLine(state: &state)
         case "Tj":
             if let token = operation.operands.last?.strings.first {
-                show(token, operation: operation, content: content, decoded: decoded,
+                show(token, operation: operation, contents: contents, decoded: decoded,
                      page: page, fonts: pageFonts, state: &state, runs: &runs)
             }
         case "TJ":
@@ -153,7 +195,7 @@ final class PDFTextLayoutEngine {
                 var stringIndex = 0
                 for value in values {
                     if case .string = value, stringIndex < operand.strings.count {
-                        show(operand.strings[stringIndex], operation: operation, content: content,
+                        show(operand.strings[stringIndex], operation: operation, contents: contents,
                              decoded: decoded, page: page, fonts: pageFonts, state: &state, runs: &runs)
                         stringIndex += 1
                     } else if let adjustment = value.doubleValue {
@@ -164,7 +206,7 @@ final class PDFTextLayoutEngine {
         case "'":
             nextLine(state: &state)
             if let token = operation.operands.last?.strings.first {
-                show(token, operation: operation, content: content, decoded: decoded,
+                show(token, operation: operation, contents: contents, decoded: decoded,
                      page: page, fonts: pageFonts, state: &state, runs: &runs)
             }
         case "\"":
@@ -174,7 +216,7 @@ final class PDFTextLayoutEngine {
             }
             nextLine(state: &state)
             if let token = operation.operands.last?.strings.first {
-                show(token, operation: operation, content: content, decoded: decoded,
+                show(token, operation: operation, contents: contents, decoded: decoded,
                      page: page, fonts: pageFonts, state: &state, runs: &runs)
             }
         default: break
@@ -183,7 +225,7 @@ final class PDFTextLayoutEngine {
 
     private func show(_ token: PDFContentStringToken,
                       operation: PDFContentOperation,
-                      content: PDFPageContent,
+                      contents: [PDFDecodedContent],
                       decoded: Data,
                       page: PDFPageInfo,
                       fonts pageFonts: [String: PDFFont],
@@ -207,8 +249,25 @@ final class PDFTextLayoutEngine {
             let spacing = state.characterSpacing + (glyph.isWordSpace ? state.wordSpacing : 0)
             advance((glyph.width / 1000 * state.fontSize + spacing) * state.horizontalScale, state: &state)
         }
+        guard glyphs.allSatisfy(\.hasReliableUnicode) else { return }
+        let operandSegments = contents.compactMap { source -> PDFRunContentSegment? in
+            let lower = max(token.range.lowerBound, source.pageRange.lowerBound)
+            let upper = min(token.range.upperBound, source.pageRange.upperBound)
+            guard lower < upper else { return nil }
+            return PDFRunContentSegment(
+                contentIndex: source.content.arrayIndex,
+                byteRange: PDFByteRange(lower - source.pageRange.lowerBound,
+                                        upper - source.pageRange.lowerBound))
+        }
+        guard let firstSegment = operandSegments.first,
+              let firstContent = contents.first(where: { $0.content.arrayIndex == firstSegment.contentIndex }) else {
+            return
+        }
         let rawSyntaxFirst = token.range.lowerBound < decoded.count ? decoded[token.range.lowerBound] : 0
-        let id = "\(page.index):\(content.arrayIndex):\(token.range.lowerBound):\(token.range.upperBound)"
+        let segmentID = operandSegments.map {
+            "\($0.contentIndex):\($0.byteRange.lowerBound)-\($0.byteRange.upperBound)"
+        }.joined(separator: ",")
+        let id = "\(page.index):\(segmentID)"
         let emptyPoint = page.displayRect(for: PDFTextRect(x: state.textMatrix.e, y: state.textMatrix.f,
                                                            width: 0, height: state.fontSize))
         let emptyRaw = PDFTextRect(x: state.textMatrix.e, y: state.textMatrix.f,
@@ -220,11 +279,12 @@ final class PDFTextLayoutEngine {
                                fontName: font.baseFont, fontSize: state.fontSize,
                                operandByteRange: token.range,
                                operatorByteRange: operation.operatorRange,
-                               contentIndex: content.arrayIndex,
+                               contentIndex: firstContent.content.arrayIndex,
                                pageReference: page.reference,
-                               contentReference: content.reference,
+                               contentReference: firstContent.content.reference,
                                fontKey: fontKey, originalCodeBytes: token.data,
-                               operandWasHex: rawSyntaxFirst == 0x3C))
+                               operandWasHex: rawSyntaxFirst == 0x3C,
+                               operandSegments: operandSegments))
         runFonts[id] = font
     }
 

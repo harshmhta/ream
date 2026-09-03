@@ -17,6 +17,7 @@ final class PDFParsedDocument {
     private(set) var trailer: [String: PDFObject] = [:]
     private(set) var latestXRefOffset: Int = 0
     private(set) var xrefStyle: PDFXRefStyle = .table
+    private(set) var needsFullXRefRepair = false
     private(set) var entries: [Int: PDFXRefEntry] = [:]
     private var cache: [PDFObjectReference: PDFObject] = [:]
     private var objectStreamCache: [Int: [Int: PDFObject]] = [:]
@@ -32,7 +33,8 @@ final class PDFParsedDocument {
 
         guard let start = Self.findStartXRef(in: bytes) else {
             // A missing startxref is recoverable for reading. Writing uses a
-            // classic incremental section whose /Prev is omitted.
+            // complete classic replacement xref whose /Prev is omitted.
+            needsFullXRefRepair = true
             reconstructAllObjects()
             return
         }
@@ -43,6 +45,10 @@ final class PDFParsedDocument {
         } catch {
             entries.removeAll()
             trailer.removeAll()
+            cache.removeAll()
+            latestXRefOffset = 0
+            xrefStyle = .table
+            needsFullXRefRepair = true
             reconstructAllObjects()
         }
     }
@@ -60,7 +66,8 @@ final class PDFParsedDocument {
                 do {
                     var parser = PDFSyntaxParser(bytes: bytes, offset: offset)
                     let (_, object) = try parser.parseIndirectObject(
-                        expected: PDFObjectReference(reference.objectNumber, generation))
+                        expected: PDFObjectReference(reference.objectNumber, generation),
+                        resolveStreamLength: resolveStreamLength)
                     cache[reference] = object
                     return object
                 } catch {
@@ -85,7 +92,7 @@ final class PDFParsedDocument {
         if let offset = scannedOffsets[reference]
             ?? scannedOffsets.first(where: { $0.key.objectNumber == reference.objectNumber })?.value {
             var parser = PDFSyntaxParser(bytes: bytes, offset: offset)
-            let (_, object) = try parser.parseIndirectObject()
+            let (_, object) = try parser.parseIndirectObject(resolveStreamLength: resolveStreamLength)
             cache[reference] = object
             return object
         }
@@ -105,6 +112,24 @@ final class PDFParsedDocument {
     func stream(_ object: PDFObject?) throws -> PDFStream? {
         guard let resolved = try dereference(object), case .stream(let stream) = resolved else { return nil }
         return stream
+    }
+
+    /// Uncompressed entries used to create a self-contained replacement xref
+    /// after damaged-xref reconstruction. Compressed objects cannot be reached
+    /// by scanning alone, so a document depending on one would already have
+    /// failed before it reached the writer.
+    var reconstructedEntries: [Int: (offset: Int, generation: Int)] {
+        var result: [Int: (offset: Int, generation: Int)] = [:]
+        for (number, entry) in entries {
+            if case .uncompressed(let offset, let generation) = entry {
+                result[number] = (offset, generation)
+            }
+        }
+        return result
+    }
+
+    private func resolveStreamLength(_ object: PDFObject) throws -> Int? {
+        try dereference(object)?.intValue
     }
 
     private func objects(in objectStreamNumber: Int) throws -> [Int: PDFObject] {
@@ -212,7 +237,7 @@ final class PDFParsedDocument {
     private func parseXRefStream(offset: Int) throws
         -> ([Int: PDFXRefEntry], [String: PDFObject]) {
         var parser = PDFSyntaxParser(bytes: bytes, offset: offset)
-        let (_, object) = try parser.parseIndirectObject()
+        let (_, object) = try parser.parseIndirectObject(resolveStreamLength: resolveStreamLength)
         guard case .stream(let stream) = object else {
             throw PDFObjectError.malformedObject(offset: offset, reason: "xref is not a stream")
         }

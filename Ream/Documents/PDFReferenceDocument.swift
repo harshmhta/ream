@@ -30,7 +30,10 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     /// current invert flag so dark-content and custom-annotation parsing keep
     /// working on the new instance.
     @Published var pdfDocument: PDFKit.PDFDocument {
-        didSet { configureDocument(pdfDocument) }
+        didSet {
+            configureDocument(pdfDocument)
+            contentGeneration &+= 1
+        }
     }
 
     /// Install the shared delegate (custom annotation classes + inverting pages)
@@ -70,11 +73,17 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     /// rows) without tracking which specific pages changed.
     @Published private(set) var pageGeneration: Int = 0
 
+    /// Monotonic version of every byte-affecting PDFKit/editor mutation. Text
+    /// editors pin the generation they parsed and must match it at commit so a
+    /// stale byte snapshot can never overwrite a newer page or annotation edit.
+    @Published private(set) var contentGeneration: Int = 0
+
     /// Bump the mutation generation. Called by the page-ops extension after each
     /// structural edit so observers refresh.
     func bumpPageGeneration() {
         pdfKitMutationsPending = true
         pageGeneration &+= 1
+        contentGeneration &+= 1
     }
 
     /// PDF is the one and only readable/writable content type in v0.1.
@@ -123,6 +132,7 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     /// so the change publisher has to be fired manually.
     func annotationsDidChange() {
         pdfKitMutationsPending = true
+        contentGeneration &+= 1
         objectWillChange.send()
     }
 
@@ -169,7 +179,11 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     /// Install bytes returned by `PDFTextEditor`, preserving the complete
     /// reader state through the caller's coordinator and registering byte-level
     /// undo/redo snapshots.
-    func applyTextEditData(_ data: Data, undoManager: UndoManager?) throws {
+    func applyTextEditData(_ data: Data, undoManager: UndoManager?,
+                           expectedContentGeneration: Int? = nil) throws {
+        if let expectedContentGeneration, expectedContentGeneration != contentGeneration {
+            throw PDFTextEditMutationError.documentChanged
+        }
         guard let replacement = InvertingPDFDocument(data: data) else { throw CocoaError(.fileReadCorruptFile) }
         let previousDocument = pdfDocument
         let previousBytes = textEditData
@@ -235,6 +249,7 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         pdfKitMutationsPending = true
         objectWillChange.send()
         PDFMetadataService.apply(metadata, to: pdfDocument)
+        contentGeneration &+= 1
     }
 
     private func registerUndo(_ undoManager: UndoManager?, previousMetadata: DocumentMetadata) {
@@ -275,6 +290,7 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         undoManager?.setActionName("Encrypt Document")
         objectWillChange.send()
         pdfKitMutationsPending = true
+        contentGeneration &+= 1
         encryptionSettings = (settings?.hasAnyPassword ?? false) ? settings?.normalized : nil
     }
 
@@ -307,6 +323,8 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         encryptionSettings = nil
         if pdfDocument.isEncrypted {
             pdfDocument = try PDFSecurityService.decryptedDocument(from: pdfDocument)
+        } else {
+            contentGeneration &+= 1
         }
     }
 
@@ -320,5 +338,13 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         objectWillChange.send()
         pdfDocument = document
         encryptionSettings = encryption
+    }
+}
+
+enum PDFTextEditMutationError: Error, Equatable, LocalizedError {
+    case documentChanged
+
+    var errorDescription: String? {
+        "The PDF changed after text editing began. The stale edit was cancelled; select the text again."
     }
 }

@@ -66,6 +66,18 @@ public final class PDFTextEditor {
     /// Return the source bytes verbatim. This is the no-op save seam.
     public func unmodifiedData() -> Data { data }
 
+    /// The page's decoded /Contents bytes in their logical concatenation order.
+    /// This is useful to audit that an incremental edit changed only the chosen
+    /// operand; it never normalizes or reserializes content syntax.
+    public func decodedPageContent(onPage pageIndex: Int) throws -> Data {
+        guard pages.indices.contains(pageIndex) else { throw PDFTextEditingError.pageOutOfRange(pageIndex) }
+        var result = Data()
+        for content in pages[pageIndex].contents {
+            result.append(try PDFStreamFilters.decode(content.stream))
+        }
+        return result
+    }
+
     /// Replace exactly one string operand and append a new content stream, page
     /// dictionary and same-style xref section. The returned `Data` always begins
     /// with every byte of the input. No output is produced when validation fails.
@@ -80,70 +92,105 @@ public final class PDFTextEditor {
             throw PDFTextEditingError.unencodableCharacters(characters: encoded.missing,
                                                              fontName: run.fontName)
         }
-        let page = pages[run.pageIndex]
-        guard let content = page.contents.first(where: { $0.arrayIndex == run.contentIndex }) else {
-            throw PDFTextEditingError.damagedContent("the source content stream is missing")
-        }
-        var decoded = try PDFStreamFilters.decode(content.stream)
-        guard run.operandByteRange.lowerBound >= 0,
-              run.operandByteRange.upperBound <= decoded.count else {
-            throw PDFTextEditingError.damagedContent("the source operand range is invalid")
-        }
         let syntax = run.operandWasHex ? hexString(replacementBytes) : literalString(replacementBytes)
-        decoded.replaceSubrange(run.operandByteRange.range, with: syntax)
+        let page = pages[run.pageIndex]
+        var editedStreams: [Int: (PDFPageContent, Data)] = [:]
+        for (segmentIndex, segment) in run.operandSegments.enumerated() {
+            guard let content = page.contents.first(where: { $0.arrayIndex == segment.contentIndex }) else {
+                throw PDFTextEditingError.damagedContent("the source content stream is missing")
+            }
+            var decoded: Data
+            if let alreadyEdited = editedStreams[segment.contentIndex]?.1 {
+                decoded = alreadyEdited
+            } else {
+                decoded = try PDFStreamFilters.decode(content.stream)
+            }
+            guard segment.byteRange.lowerBound >= 0,
+                  segment.byteRange.upperBound <= decoded.count else {
+                throw PDFTextEditingError.damagedContent("the source operand range is invalid")
+            }
+            decoded.replaceSubrange(segment.byteRange.range,
+                                    with: segmentIndex == 0 ? syntax : Data())
+            editedStreams[segment.contentIndex] = (content, decoded)
+        }
+        guard !editedStreams.isEmpty else {
+            throw PDFTextEditingError.damagedContent("the source operand has no content-stream bytes")
+        }
 
-        var streamDictionary = content.stream.dictionary
-        for key in ["Filter", "F", "DecodeParms", "DP", "Length"] { streamDictionary.removeValue(forKey: key) }
-        let newStream = PDFObject.stream(PDFStream(dictionary: streamDictionary, data: decoded))
-        let newContentReference = PDFObjectReference(document.size, 0)
+        let ordered = editedStreams.values.sorted { $0.0.arrayIndex < $1.0.arrayIndex }
+        let updates: [(reference: PDFObjectReference, object: PDFObject, contentIndex: Int)] =
+            ordered.enumerated().map { offset, item in
+                var dictionary = item.0.stream.dictionary
+                for key in ["Filter", "F", "DecodeParms", "DP", "Length"] { dictionary.removeValue(forKey: key) }
+                return (PDFObjectReference(document.size + offset, 0),
+                        .stream(PDFStream(dictionary: dictionary, data: item.1)),
+                        item.0.arrayIndex)
+            }
+        let replacements = Dictionary(uniqueKeysWithValues: updates.map { ($0.contentIndex, $0.reference) })
         var pageDictionary = page.dictionary
-        pageDictionary["Contents"] = try replacingContents(on: page, editedContent: content,
-                                                           with: newContentReference)
-        return writeIncremental(content: newStream, contentReference: newContentReference,
+        pageDictionary["Contents"] = try replacingContents(on: page, replacements: replacements)
+        return writeIncremental(contents: updates.map { ($0.reference, $0.object) },
                                 page: page, pageDictionary: pageDictionary)
     }
 
-    private func replacingContents(on page: PDFPageInfo, editedContent: PDFPageContent,
-                                   with replacement: PDFObjectReference) throws -> PDFObject {
-        guard let original = page.dictionary["Contents"] else { return .reference(replacement) }
+    private func replacingContents(on page: PDFPageInfo,
+                                   replacements: [Int: PDFObjectReference]) throws -> PDFObject {
+        guard let original = page.dictionary["Contents"] else {
+            guard let replacement = replacements[0] else {
+                throw PDFTextEditingError.damagedContent("the page has no replaceable content")
+            }
+            return .reference(replacement)
+        }
         if let array = try document.dereference(original)?.arrayValue {
             var copy = array
-            guard copy.indices.contains(editedContent.arrayIndex) else {
-                throw PDFTextEditingError.damagedContent("the /Contents array changed")
+            for (index, replacement) in replacements {
+                guard copy.indices.contains(index) else {
+                    throw PDFTextEditingError.damagedContent("the /Contents array changed")
+                }
+                copy[index] = .reference(replacement)
             }
-            copy[editedContent.arrayIndex] = .reference(replacement)
             return .array(copy)
+        }
+        guard replacements.count == 1, let replacement = replacements[0] else {
+            throw PDFTextEditingError.damagedContent("a single /Contents stream has inconsistent segments")
         }
         return .reference(replacement)
     }
 
-    private func writeIncremental(content: PDFObject,
-                                  contentReference: PDFObjectReference,
+    private func writeIncremental(contents: [(PDFObjectReference, PDFObject)],
                                   page: PDFPageInfo,
                                   pageDictionary: [String: PDFObject]) -> Data {
         var output = data
         if let last = output.last, last != 0x0A, last != 0x0D { output.append(0x0A) }
-        let contentOffset = output.count
-        appendIndirect(contentReference, object: content, to: &output)
+        var writtenEntries: [(Int, Int, Int)] = []
+        for (reference, content) in contents {
+            let offset = output.count
+            appendIndirect(reference, object: content, to: &output)
+            writtenEntries.append((reference.objectNumber, offset, reference.generation))
+        }
         let pageOffset = output.count
         appendIndirect(page.reference, object: .dictionary(pageDictionary), to: &output)
+        writtenEntries.append((page.reference.objectNumber, pageOffset, page.reference.generation))
+
+        let nextObjectNumber = (contents.map { $0.0.objectNumber }.max() ?? (document.size - 1)) + 1
+        if document.needsFullXRefRepair {
+            let xrefOffset = output.count
+            appendRepairedClassicXRef(updates: writtenEntries, size: nextObjectNumber, to: &output)
+            output.appendASCII("startxref\n\(xrefOffset)\n%%EOF\n")
+            return output
+        }
 
         switch document.xrefStyle {
         case .table:
             let xrefOffset = output.count
-            appendClassicXRef(entries: [
-                (page.reference.objectNumber, pageOffset, page.reference.generation),
-                (contentReference.objectNumber, contentOffset, contentReference.generation)
-            ], size: contentReference.objectNumber + 1, to: &output)
+            appendClassicXRef(entries: writtenEntries, size: nextObjectNumber, to: &output)
             output.appendASCII("startxref\n\(xrefOffset)\n%%EOF\n")
         case .stream:
-            let xrefReference = PDFObjectReference(contentReference.objectNumber + 1, 0)
+            let xrefReference = PDFObjectReference(nextObjectNumber, 0)
             let xrefOffset = output.count
-            appendXRefStream(entries: [
-                (page.reference.objectNumber, pageOffset, page.reference.generation),
-                (contentReference.objectNumber, contentOffset, contentReference.generation),
-                (xrefReference.objectNumber, xrefOffset, 0)
-            ], reference: xrefReference, size: xrefReference.objectNumber + 1, to: &output)
+            writtenEntries.append((xrefReference.objectNumber, xrefOffset, 0))
+            appendXRefStream(entries: writtenEntries, reference: xrefReference,
+                             size: xrefReference.objectNumber + 1, to: &output)
             output.appendASCII("startxref\n\(xrefOffset)\n%%EOF\n")
         }
         return output
@@ -168,6 +215,27 @@ public final class PDFTextEditor {
         output.append(0x0A)
     }
 
+    private func appendRepairedClassicXRef(updates: [(Int, Int, Int)], size: Int, to output: inout Data) {
+        var complete = document.reconstructedEntries
+        for (number, offset, generation) in updates {
+            complete[number] = (offset, generation)
+        }
+        output.appendASCII("xref\n0 \(size)\n0000000000 65535 f \n")
+        if size > 1 {
+            for number in 1..<size {
+                if let entry = complete[number] {
+                    output.appendASCII(String(format: "%010d %05d n \n", entry.offset, entry.generation))
+                } else {
+                    output.appendASCII("0000000000 00000 f \n")
+                }
+            }
+        }
+        output.appendASCII("trailer\n")
+        output.append(PDFObjectSerializer.data(for: .dictionary(trailerDictionary(size: size,
+                                                                                   includePrevious: false))))
+        output.append(0x0A)
+    }
+
     private func appendXRefStream(entries: [(Int, Int, Int)], reference: PDFObjectReference,
                                   size: Int, to output: inout Data) {
         let sorted = entries.sorted { $0.0 < $1.0 }
@@ -188,10 +256,12 @@ public final class PDFTextEditor {
         appendIndirect(reference, object: .stream(PDFStream(dictionary: dictionary, data: rows)), to: &output)
     }
 
-    private func trailerDictionary(size: Int) -> [String: PDFObject] {
+    private func trailerDictionary(size: Int, includePrevious: Bool = true) -> [String: PDFObject] {
         var result: [String: PDFObject] = ["Size": .integer(size)]
         for key in ["Root", "Info", "ID"] { if let value = document.trailer[key] { result[key] = value } }
-        if document.latestXRefOffset > 0 { result["Prev"] = .integer(document.latestXRefOffset) }
+        if includePrevious, document.latestXRefOffset > 0 {
+            result["Prev"] = .integer(document.latestXRefOffset)
+        }
         return result
     }
 

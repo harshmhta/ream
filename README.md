@@ -82,8 +82,10 @@ API keys.
   byte snapshots. If annotations/page/metadata changes are mixed in, PDFKit
   reserializes at save time (visual fidelity remains, byte stability does not).
 - Milestone A rejects encrypted PDFs and characters the existing font/subset
-  cannot encode, and explains why without applying a partial edit. Scanned or
-  flattened pages correctly report that they have no editable text layer.
+  cannot encode, and explains why without applying a partial edit. Composite
+  fonts without a trustworthy Unicode map are not exposed as editable text.
+  Scanned or flattened pages correctly report that they have no editable text
+  layer.
 
 **Pages**
 

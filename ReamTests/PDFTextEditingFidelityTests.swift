@@ -77,15 +77,49 @@ final class PDFTextEditingFidelityTests: XCTestCase {
                        "Mixed mutation")
     }
 
+    @MainActor
+    func testActiveEditorRejectsStaleCommitAfterPageMutation() throws {
+        let fixture = PDFEditingFixtures.corpus()[0]
+        let model = try PDFReferenceDocument(data: fixture.data)
+        model.duplicatePages(at: IndexSet(integer: 0), undoManager: nil)
+        XCTAssertEqual(model.pdfDocument.pageCount, 2)
+
+        let staleSnapshot = try model.dataForTextEditing()
+        let staleEditor = try PDFTextEditor.open(data: staleSnapshot)
+        let staleRun = try XCTUnwrap(staleEditor.textRuns(onPage: 0).first { $0.text == fixture.oldText })
+        let controller = PDFTextEditingController(document: model)
+        controller.activate()
+
+        model.deletePages(at: IndexSet(integer: 0), undoManager: nil)
+        XCTAssertEqual(model.pdfDocument.pageCount, 1)
+        XCTAssertThrowsError(try controller.commitText(staleRun, replacement: fixture.newText)) { error in
+            XCTAssertEqual(error as? PDFTextEditMutationError, .documentChanged)
+        }
+        XCTAssertEqual(model.pdfDocument.pageCount, 1,
+                       "a stale text snapshot must never restore the deleted page")
+        XCTAssertTrue((model.pdfDocument.page(at: 0)?.string ?? "").contains(fixture.oldText))
+    }
+
     private func assertFidelity(_ fixture: PDFEditingFixtures.Fixture,
                                 file: StaticString = #filePath, line: UInt = #line) throws {
         let editor = try PDFTextEditor.open(data: fixture.data)
         let runs = try editor.textRuns(onPage: 0)
         let run = try XCTUnwrap(runs.first { $0.text == fixture.oldText },
                                 "missing run in \(fixture.name); decoded \(runs.map(\.text))", file: file, line: line)
+        let beforeContent = try editor.decodedPageContent(onPage: 0)
         let before = try render(fixture.data)
         let edited = try editor.replaceText(of: run, with: fixture.newText)
         XCTAssertTrue(edited.starts(with: fixture.data), "byte prefix: \(fixture.name)", file: file, line: line)
+
+        let editedCore = try PDFTextEditor.open(data: edited)
+        let editedRun = try XCTUnwrap(editedCore.textRuns(onPage: 0).first { $0.text == fixture.newText },
+                                      "missing edited run in \(fixture.name)", file: file, line: line)
+        let afterContent = try editedCore.decodedPageContent(onPage: 0)
+        var expectedContent = beforeContent
+        expectedContent.replaceSubrange(run.operandByteRange.lowerBound..<run.operandByteRange.upperBound,
+            with: afterContent.subdata(in: editedRun.operandByteRange.lowerBound..<editedRun.operandByteRange.upperBound))
+        XCTAssertEqual(afterContent, expectedContent,
+                       "decoded content changed outside the selected operand: \(fixture.name)", file: file, line: line)
 
         let pdfKit = try XCTUnwrap(PDFDocument(data: edited), fixture.name, file: file, line: line)
         let extracted = pdfKit.page(at: 0)?.string ?? ""
@@ -97,26 +131,25 @@ final class PDFTextEditingFidelityTests: XCTestCase {
         XCTAssertEqual(before.width, after.width)
         XCTAssertEqual(before.height, after.height)
         let kitDocument = PDFDocument(data: fixture.data)
-        let kitBounds = kitDocument?.findString(fixture.oldText, withOptions: [])
-            .first.flatMap { selection in kitDocument?.page(at: 0).map { selection.bounds(for: $0) } }
-        if let kitBounds {
-            let engineBounds = CGRect(x: run.userSpaceBounds.x, y: run.userSpaceBounds.y,
-                                      width: run.userSpaceBounds.width,
-                                      height: run.userSpaceBounds.height)
-            XCTAssertEqual(engineBounds.minX, kitBounds.minX, accuracy: 1.5, fixture.name)
-            XCTAssertEqual(engineBounds.width, kitBounds.width, accuracy: 1.5, fixture.name)
-            // PDFKit 14 reports a tight glyph-ink vertical selection for
-            // non-embedded standard-14 fonts, while newer PDFKit releases use
-            // the font ascent/descent box. The engine intentionally uses PDF
-            // font metrics, so require that its vertical box encloses either
-            // platform representation instead of pinning an OS-specific height.
-            XCTAssertLessThanOrEqual(engineBounds.minY, kitBounds.minY + 1.5, fixture.name)
-            XCTAssertGreaterThanOrEqual(engineBounds.maxY, kitBounds.maxY - 1.5, fixture.name)
-        }
+        let selection = try XCTUnwrap(kitDocument?.findString(fixture.oldText, withOptions: []).first,
+                                      "PDFKit geometry oracle missing selection: \(fixture.name)", file: file, line: line)
+        let sourcePage = try XCTUnwrap(kitDocument?.page(at: 0), file: file, line: line)
+        let kitBounds = selection.bounds(for: sourcePage)
+        let engineBounds = CGRect(x: run.userSpaceBounds.x, y: run.userSpaceBounds.y,
+                                  width: run.userSpaceBounds.width,
+                                  height: run.userSpaceBounds.height)
+        XCTAssertEqual(engineBounds.minX, kitBounds.minX, accuracy: 1.5, fixture.name)
+        XCTAssertEqual(engineBounds.width, kitBounds.width, accuracy: 1.5, fixture.name)
+        // PDFKit 14 reports a tight glyph-ink vertical selection for
+        // non-embedded standard-14 fonts, while newer PDFKit releases use
+        // the font ascent/descent box. The engine intentionally uses PDF
+        // font metrics, so require that its vertical box encloses either
+        // platform representation instead of pinning an OS-specific height.
+        XCTAssertLessThanOrEqual(engineBounds.minY, kitBounds.minY + 1.5, fixture.name)
+        XCTAssertGreaterThanOrEqual(engineBounds.maxY, kitBounds.maxY - 1.5, fixture.name)
         let sourceCGPage = try XCTUnwrap(CGDataProvider(data: fixture.data as CFData)
             .flatMap { CGPDFDocument($0) }?.page(at: 1))
-        let mask = pixelMask(for: kitBounds ?? CGRect(x: run.bounds.x, y: run.bounds.y,
-                                                       width: run.bounds.width, height: run.bounds.height),
+        let mask = pixelMask(for: kitBounds,
                              width: before.width, height: before.height, page: sourceCGPage)
         var outsideDifferences = 0
         var differenceBounds = CGRect.null

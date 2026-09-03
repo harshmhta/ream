@@ -19,12 +19,13 @@ final class PDFTextEditingController: NSObject, ObservableObject, NSTextFieldDel
     private var editor: PDFTextEditor?
     private var inlineField: NSTextField?
     private var editingRun: PDFTextRun?
+    private var editorGeneration: Int?
     private var cancellable: AnyCancellable?
 
     init(document: PDFReferenceDocument) {
         self.document = document
         super.init()
-        cancellable = document.$pdfDocument.dropFirst().sink { [weak self] _ in
+        cancellable = document.$contentGeneration.dropFirst().sink { [weak self] _ in
             guard let self else { return }
             let readingState = self.coordinator?.captureReadingState()
             DispatchQueue.main.async { self.reloadEngineIfActive(preserving: readingState) }
@@ -41,6 +42,7 @@ final class PDFTextEditingController: NSObject, ObservableObject, NSTextFieldDel
                 throw PDFTextEditingError.noTextOnPage(page)
             }
             editor = parsed
+            editorGeneration = document.contentGeneration
             isActive = true
             coordinator?.pdfView.textEditingController = self
             coordinator?.pdfView.window?.acceptsMouseMovedEvents = true
@@ -53,6 +55,7 @@ final class PDFTextEditingController: NSObject, ObservableObject, NSTextFieldDel
         highlightedRun = nil
         isActive = false
         editor = nil
+        editorGeneration = nil
         coordinator?.pdfView.textEditingController = nil
         coordinator?.pdfView.setNeedsDisplay(coordinator?.pdfView.bounds ?? .zero)
     }
@@ -113,13 +116,11 @@ final class PDFTextEditingController: NSObject, ObservableObject, NSTextFieldDel
     }
 
     private func commitInlineEdit() {
-        guard let editor, let run = editingRun, let field = inlineField else { return }
+        guard let run = editingRun, let field = inlineField else { return }
         let replacement = field.stringValue
         do {
             let readingState = coordinator?.captureReadingState()
-            let bytes = try editor.replaceText(of: run, with: replacement)
-            try document.applyTextEditData(bytes, undoManager: undoManager)
-            self.editor = try PDFTextEditor.open(data: bytes)
+            try commitText(run, replacement: replacement)
             inlineField?.removeFromSuperview()
             inlineField = nil
             editingRun = nil
@@ -128,10 +129,27 @@ final class PDFTextEditingController: NSObject, ObservableObject, NSTextFieldDel
         } catch { fail(error) }
     }
 
+    /// Commit seam kept internal so tests can prove a stale editor snapshot is
+    /// rejected after an in-place PDFKit mutation.
+    func commitText(_ run: PDFTextRun, replacement: String) throws {
+        guard let editor, let editorGeneration else {
+            throw PDFTextEditMutationError.documentChanged
+        }
+        guard editorGeneration == document.contentGeneration else {
+            throw PDFTextEditMutationError.documentChanged
+        }
+        let bytes = try editor.replaceText(of: run, with: replacement)
+        try document.applyTextEditData(bytes, undoManager: undoManager,
+                                       expectedContentGeneration: editorGeneration)
+        self.editor = try PDFTextEditor.open(data: bytes)
+        self.editorGeneration = document.contentGeneration
+    }
+
     private func reloadEngineIfActive(preserving readingState: DocumentReadingState?) {
         guard isActive else { return }
         do {
             editor = try PDFTextEditor.open(data: document.dataForTextEditing())
+            editorGeneration = document.contentGeneration
             highlightedRun = nil
             cancelInlineEdit()
             coordinator?.install(document.pdfDocument, preserving: readingState)

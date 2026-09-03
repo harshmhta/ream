@@ -239,24 +239,31 @@ must disable it for the duration or it gets baked into the output.
 latest revision, follows the page tree and exposes independently editable
 `PDFTextRun` operands. `replaceText(of:with:)` validates the complete replacement
 against the original font before producing output. It copies the decoded content
-stream verbatim except for that one string token, appends a replacement stream
-and page dictionary, then emits an incremental xref section in the original
-style (table or stream). Original bytes are never rewritten; sequential edits
-append sequential revisions.
+stream verbatim except for that one string token, appends replacement stream(s)
+and a page dictionary, then emits an incremental xref section in the original
+style (table or stream). `/Contents` arrays are parsed as one logical stream, so
+tokens crossing stream boundaries are tracked and only their operand segments
+are replaced. Original bytes are never rewritten; sequential edits append
+sequential revisions. If opening required broken-xref reconstruction, the update
+contains a complete repaired classic xref with no invalid `/Prev` dependency.
 
 The engine uses Foundation plus the platform zlib module and imports no UI or
 rendering framework. `PDFTextRun` carries both raw PDF user-space bounds (for
 `PDFView.convert`) and crop/rotation-normalized display bounds, as well as exact
 operand/operator byte ranges. Fonts cover simple Type1/TrueType/Type3 encodings,
 Differences/glyph names, Type0 Identity and embedded CMaps, ToUnicode bf/cid
-maps, simple/CID widths, standard-14 metrics, and embedded sfnt `cmap` checks.
+maps, indirect simple/CID widths, standard-14 metrics, and embedded sfnt `cmap`
+checks. Composite text without a reliable ToUnicode mapping is intentionally not
+exposed as editable: collection-specific CIDs are not Unicode code points.
 
 The app's per-window `PDFTextEditingController` is intentionally thin: it owns
 tool state, hover/click hit-testing, the inline `NSTextField`, readable failures,
 and UndoManager byte snapshots. The toolbar, Edit menu and command palette all
 reach it through a focused value. A commit replaces the displayed PDFKit
 document from the returned bytes and restores page, destination, zoom and view
-mode.
+mode. Each parsed editor snapshot pins a monotonic document-content generation;
+every PDFKit mutation invalidates/rebuilds it, and commit checks that generation
+again before installing bytes so stale editors cannot overwrite page changes.
 
 `PDFReferenceDocument` retains its exact input bytes and latest text-edit bytes.
 An untouched or text-only `snapshot(contentType:)` returns those bytes verbatim.
