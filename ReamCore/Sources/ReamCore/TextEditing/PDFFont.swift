@@ -180,7 +180,12 @@ final class PDFFont {
             for item in differences {
                 if let start = item.intValue { code = start }
                 else if let glyph = item.nameValue {
-                    if let scalar = AdobeGlyphList.unicode(glyph) { mapping[code] = scalar }
+                    // An explicit name replaces the base-encoding character
+                    // outright. When it cannot be resolved the code becomes
+                    // unmappable (`nil` removes the entry): keeping the base
+                    // glyph would present, and later encode, a character the
+                    // font does not draw at that code.
+                    mapping[code] = AdobeGlyphList.unicode(glyph)
                     code += 1
                 }
             }
@@ -403,41 +408,86 @@ private enum PDFCMapParser {
     }
 }
 
-private enum AdobeGlyphList {
-    private static let names: [String: String] = [
-        "space":" ", "exclam":"!", "quotedbl":"\"", "numbersign":"#", "dollar":"$",
-        "percent":"%", "ampersand":"&", "quotesingle":"'", "parenleft":"(", "parenright":")",
-        "asterisk":"*", "plus":"+", "comma":",", "hyphen":"-", "period":".", "slash":"/",
-        "colon":":", "semicolon":";", "less":"<", "equal":"=", "greater":">", "question":"?",
-        "at":"@", "bracketleft":"[", "backslash":"\\", "bracketright":"]", "asciicircum":"^",
-        "underscore":"_", "grave":"`", "braceleft":"{", "bar":"|", "braceright":"}", "asciitilde":"~",
-        "Euro":"€", "bullet":"•", "endash":"–", "emdash":"—", "quotedblleft":"“",
-        "quotedblright":"”", "quoteleft":"‘", "quoteright":"’", "ellipsis":"…", "fi":"ﬁ", "fl":"ﬂ"
-    ]
+/// Resolves PostScript glyph names to Unicode text following the Adobe Glyph
+/// List Specification (https://github.com/adobe-type-tools/agl-specification):
+/// drop a `.suffix`, split ligature components on `_`, and map each component
+/// through the AGL, then the `uniXXXX[YYYY…]` form, then the `uXXXX[XX]` form.
+/// The specification maps an unresolvable component to an empty string; this
+/// resolver instead returns `nil` for any name it cannot fully resolve, so a
+/// `/Differences` entry can fail closed rather than guess a character.
+enum AdobeGlyphList {
+    private static let table: [String: String] = {
+        var result: [String: String] = [:]
+        result.reserveCapacity(4400)
+        for line in glyphListText.utf8.split(separator: UInt8(ascii: "\n")) {
+            guard let separator = line.firstIndex(of: UInt8(ascii: ";")) else { continue }
+            let name = String(decoding: line[line.startIndex..<separator], as: UTF8.self)
+            var text = ""
+            for hex in line[line.index(after: separator)...].split(separator: UInt8(ascii: " ")) {
+                guard let value = UInt32(String(decoding: hex, as: UTF8.self), radix: 16),
+                      let scalar = UnicodeScalar(value) else { text = ""; break }
+                text.unicodeScalars.append(scalar)
+            }
+            if !text.isEmpty { result[name] = text }
+        }
+        return result
+    }()
 
     static func unicode(_ rawName: String) -> String? {
-        let name = rawName.split(separator: ".").first.map(String.init) ?? rawName
-        if name.count == 1 { return name }
-        if let known = names[name] { return known }
-        if name.hasPrefix("uni"), name.count >= 7 {
-            let hex = String(name.dropFirst(3))
-            var output = ""
-            for index in stride(from: 0, to: hex.count, by: 4) {
-                let start = hex.index(hex.startIndex, offsetBy: index)
-                let end = hex.index(start, offsetBy: min(4, hex.count - index))
-                if let value = UInt32(hex[start..<end], radix: 16), let scalar = UnicodeScalar(value) { output.append(Character(scalar)) }
-            }
-            return output.isEmpty ? nil : output
+        // 1. Everything from the first period is a stylistic suffix:
+        //    "a.sc" → "a", and ".notdef" has no name left to resolve.
+        let name = rawName.split(separator: ".", maxSplits: 1,
+                                 omittingEmptySubsequences: false).first ?? ""
+        guard !name.isEmpty else { return nil }
+        // 2. Underscores join ligature components: "f_f_i" → "ffi".
+        var output = ""
+        for component in name.split(separator: "_", omittingEmptySubsequences: false) {
+            guard let text = unicode(component: component) else { return nil }
+            output += text
         }
-        if name.hasPrefix("u"), let value = UInt32(name.dropFirst(), radix: 16), let scalar = UnicodeScalar(value) {
+        return output
+    }
+
+    private static func unicode(component: Substring) -> String? {
+        if let known = table[String(component)] { return known }
+        // Glyph-index names ("g12", "G12", "cid12", "gid12", "glyph12",
+        // "index12") address a position in the font program, not a
+        // character. They are rejected explicitly so they can never be
+        // mistaken for a `u` form.
+        if isGlyphIndexName(component) { return nil }
+        if component.hasPrefix("uni") {
+            let hex = component.dropFirst(3)
+            guard hex.count >= 4, hex.count.isMultiple(of: 4) else { return nil }
+            var text = ""
+            var cursor = hex.startIndex
+            while cursor < hex.endIndex {
+                let next = hex.index(cursor, offsetBy: 4)
+                guard let scalar = scalar(hex[cursor..<next]) else { return nil }
+                text.unicodeScalars.append(scalar)
+                cursor = next
+            }
+            return text
+        }
+        if component.hasPrefix("u") {
+            let hex = component.dropFirst()
+            guard (4...6).contains(hex.count), let scalar = scalar(hex) else { return nil }
             return String(scalar)
         }
-        if name.count == 1 { return name }
-        // Letter and digit glyph names are their own Unicode spelling.
-        if name.count == 1 || (name.count == 2 && name.first == "A") { return name }
-        let digitNames = ["zero","one","two","three","four","five","six","seven","eight","nine"]
-        if let index = digitNames.firstIndex(of: name) { return String(index) }
         return nil
+    }
+
+    /// `nil` for anything that is not hex, is a surrogate, or exceeds U+10FFFF.
+    private static func scalar(_ hex: Substring) -> UnicodeScalar? {
+        guard hex.allSatisfy(\.isHexDigit), let value = UInt32(hex, radix: 16) else { return nil }
+        return UnicodeScalar(value)
+    }
+
+    private static func isGlyphIndexName(_ component: Substring) -> Bool {
+        for prefix in ["glyph", "index", "cid", "gid", "g", "G"] where component.hasPrefix(prefix) {
+            let digits = component.dropFirst(prefix.count)
+            return !digits.isEmpty && digits.allSatisfy { $0.isASCII && $0.isNumber }
+        }
+        return false
     }
 }
 

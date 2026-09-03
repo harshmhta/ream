@@ -255,6 +255,116 @@ final class PDFObjectAndEditingTests: XCTestCase {
         XCTAssertEqual(try reopened.textRuns(onPage: 0).map(\.text), ["Jel", "lo"])
     }
 
+    func testDifferencesMinusDecodesToUnicodeMinusAndEditsSurgically() throws {
+        let original = PDFTestFiles.classic(content: "BT /F1 12 Tf 40 100 Td (Bash \\255 The GNU shell) Tj ET",
+            font: "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding << /Differences [173 /minus] >> >>")
+        let editor = try PDFTextEditor.open(data: original)
+        let run = try XCTUnwrap(editor.textRuns(onPage: 0).first)
+        XCTAssertEqual(run.text, "Bash \u{2212} The GNU shell",
+                       "code 173 must follow /Differences (minus), not StandardEncoding's guilsinglright")
+
+        let before = try editor.decodedPageContent(onPage: 0)
+        let edited = try editor.replaceText(of: run, with: "Bash \u{2212} the GNU shell")
+        XCTAssertTrue(edited.starts(with: original))
+        let reopened = try PDFTextEditor.open(data: edited)
+        let editedRun = try XCTUnwrap(reopened.textRuns(onPage: 0).first)
+        XCTAssertEqual(editedRun.text, "Bash \u{2212} the GNU shell")
+        let after = try reopened.decodedPageContent(onPage: 0)
+        var expected = before
+        expected.replaceSubrange(run.operandByteRange.range,
+                                 with: after.subdata(in: editedRun.operandByteRange.range))
+        XCTAssertEqual(after, expected, "only the selected operand may change")
+        XCTAssertEqual(String(decoding: after, as: UTF8.self),
+                       "BT /F1 12 Tf 40 100 Td (Bash \\255 the GNU shell) Tj ET",
+                       "U+2212 must encode back to the /Differences code 173")
+    }
+
+    func testArticleStyleIndirectDifferencesEncodingDecodesMinusWithItsWidth() throws {
+        // Mirrors /usr/share/doc/bash/article.pdf font object 9: a non-embedded
+        // standard-14 Times-Bold with /FirstChar 0 /LastChar 255, an explicit
+        // /Widths array and an indirect /Encoding whose only difference is
+        // 173 /minus. PDFKit presents "Bash − The GNU shell*" for that font.
+        let content = "BT /F1 18 Tf 40 100 Td (Bash \\255 The GNU shell*) Tj ET"
+        let pdf = PDFTestFiles.objects([
+            1: "<< /Type /Catalog /Pages 2 0 R >>",
+            2: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            3: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+            4: "<</Subtype/Type1/BaseFont/Times-Bold/Type/Font/Name/R9/FirstChar 0/LastChar 255/Widths\(PDFTestFiles.articleTimesBoldWidths)\n/Encoding 6 0 R>>",
+            5: "<< /Length \(content.utf8.count) >>\nstream\n\(content)\nendstream",
+            6: "<</Type/Encoding/Differences[\n173/minus]>>"
+        ])
+        let editor = try PDFTextEditor.open(data: pdf)
+        let run = try XCTUnwrap(editor.textRuns(onPage: 0).first)
+        XCTAssertEqual(run.text, "Bash \u{2212} The GNU shell*")
+        XCTAssertEqual(run.glyphs[5].text, "\u{2212}")
+        XCTAssertEqual(run.glyphs[5].userSpaceBounds.width, 570.0 / 1000 * 18, accuracy: 0.001,
+                       "the minus keeps its /Widths entry")
+        let edited = try editor.replaceText(of: run, with: "Bash \u{2212} the GNU shell*")
+        XCTAssertTrue(edited.starts(with: pdf))
+        XCTAssertEqual(try PDFTextEditor.open(data: edited).textRuns(onPage: 0).first?.text,
+                       "Bash \u{2212} the GNU shell*")
+    }
+
+    func testUnknownDifferencesNameIsUnmappableRatherThanBaseEncodingFallback() throws {
+        let font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /nosuchglyph 67 /g3] >> >>"
+        let pdf = PDFTestFiles.classic(content: "BT /F1 12 Tf (A) Tj (B) Tj (C) Tj (AB) Tj ET", font: font)
+        let editor = try PDFTextEditor.open(data: pdf)
+        let runs = try editor.textRuns(onPage: 0)
+        XCTAssertEqual(runs.map(\.text), ["B"],
+                       "runs containing an unmappable code must not be exposed as editable")
+        XCTAssertThrowsError(try editor.replaceText(of: runs[0], with: "A")) { error in
+            guard case PDFTextEditingError.unencodableCharacters(let characters, _) = error else {
+                return XCTFail("unexpected error \(error)")
+            }
+            XCTAssertEqual(characters, ["A"], "the base-encoding glyph behind an unknown name must not be claimed")
+        }
+    }
+
+    func testToUnicodeStillResolvesCodesWithUnknownDifferencesNames() throws {
+        let cmap = "1 begincodespacerange\n<00> <FF>\nendcodespacerange\n1 beginbfchar\n<41> <0041>\nendbfchar"
+        let content = "BT /F1 12 Tf (A) Tj ET"
+        let pdf = PDFTestFiles.objects([
+            1: "<< /Type /Catalog /Pages 2 0 R >>",
+            2: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            3: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+            4: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Differences [65 /g3] >> /ToUnicode 6 0 R >>",
+            5: "<< /Length \(content.utf8.count) >>\nstream\n\(content)\nendstream",
+            6: "<< /Length \(cmap.utf8.count) >>\nstream\n\(cmap)\nendstream"
+        ])
+        XCTAssertEqual(try PDFTextEditor.open(data: pdf).textRuns(onPage: 0).map(\.text), ["A"],
+                       "/ToUnicode remains authoritative over an unknown /Differences name")
+    }
+
+    func testAdobeGlyphListResolvesStandardNamesAndSpecificationForms() {
+        let expectations: [String: String] = [
+            "minus": "\u{2212}", "hyphen": "-", "endash": "\u{2013}", "emdash": "\u{2014}",
+            "quoteleft": "\u{2018}", "quoteright": "\u{2019}", "quotedblleft": "\u{201C}",
+            "quotedblright": "\u{201D}", "quotesingle": "'", "bullet": "\u{2022}", "ellipsis": "\u{2026}",
+            "dagger": "\u{2020}", "daggerdbl": "\u{2021}", "fi": "\u{FB01}", "fl": "\u{FB02}",
+            "ff": "\u{FB00}", "ffi": "\u{FB03}", "ffl": "\u{FB04}", "periodcentered": "\u{00B7}",
+            "multiply": "\u{00D7}", "divide": "\u{00F7}", "degree": "\u{00B0}", "plusminus": "\u{00B1}",
+            "section": "\u{00A7}", "paragraph": "\u{00B6}", "copyright": "\u{00A9}", "registered": "\u{00AE}",
+            "trademark": "\u{2122}", "guillemotleft": "\u{00AB}", "guillemotright": "\u{00BB}",
+            "guilsinglleft": "\u{2039}", "guilsinglright": "\u{203A}",
+            "Agrave": "\u{00C0}", "Ccedilla": "\u{00C7}", "eacute": "\u{00E9}", "ntilde": "\u{00F1}",
+            "odieresis": "\u{00F6}", "ucircumflex": "\u{00FB}", "yacute": "\u{00FD}", "thorn": "\u{00FE}",
+            "AE": "\u{00C6}", "oslash": "\u{00F8}", "germandbls": "\u{00DF}", "Euro": "\u{20AC}",
+            "zero": "0", "nine": "9", "A": "A", "a": "a", "u": "u", "space": " ",
+            "dalethatafpatah": "\u{05D3}\u{05B2}",
+            "uni2212": "\u{2212}", "uni00410042": "AB", "u2212": "\u{2212}", "u1F600": "\u{1F600}",
+            "f_f_i": "ffi", "a.sc": "a", "uni0041.alt": "A"
+        ]
+        for (name, expected) in expectations.sorted(by: { $0.key < $1.key }) {
+            XCTAssertEqual(AdobeGlyphList.unicode(name), expected, name)
+        }
+        let unmappable = ["g3", "g123", "G12", "cid12", "glyph12", "index12", "gid12", ".notdef", "notdef",
+                          "nosuchglyph", "uniZZZZ", "uni12", "uni123", "uniD800", "uD83D", "u110000",
+                          "f_nosuch", "", "AB", "1"]
+        for name in unmappable {
+            XCTAssertNil(AdobeGlyphList.unicode(name), "\(name) must fail closed")
+        }
+    }
+
     func testASCIIHexASCII85AndRunLengthFilters() throws {
         XCTAssertEqual(try PDFStreamFilters.decode(Data("48656c6c6f>".utf8), filters: .name("ASCIIHexDecode")), Data("Hello".utf8))
         XCTAssertEqual(try PDFStreamFilters.decode(Data("<~87cURDZ~>".utf8), filters: .name("ASCII85Decode")), Data("Hello".utf8))
@@ -341,6 +451,30 @@ final class PDFObjectAndEditingTests: XCTestCase {
 }
 
 private enum PDFTestFiles {
+    /// The 256-entry /Widths array of /usr/share/doc/bash/article.pdf font
+    /// object 9 (Times-Bold, /FirstChar 0), reproduced so tests can mirror
+    /// that real Type1 /Differences font without committing the system file.
+    static let articleTimesBoldWidths = """
+[
+581 520 556 667 389 444 722 1000 278 250 250 250 250 250 250 250
+250 250 250 250 250 250 250 250 250 250 250 250 250 250 250 250
+250 333 555 500 500 1000 833 333 333 333 500 570 250 333 250 278
+500 500 500 500 500 500 500 500 500 500 333 333 570 570 570 500
+930 722 667 722 722 667 611 778 778 389 500 778 667 944 722 778
+611 778 722 556 667 722 722 1000 722 722 667 333 278 333 333 500
+333 500 556 444 556 444 333 500 556 278 333 556 278 833 556 500
+556 556 444 389 333 556 500 722 500 500 444 394 220 394 333 250
+333 500 500 350 500 167 1000 500 500 500 1000 250 556 556 250 250
+278 250 333 333 333 333 333 333 333 500 500 722 278 500 1000 667
+250 333 500 500 500 500 220 500 333 747 300 333 570 570 747 333
+400 570 300 300 333 556 540 250 333 300 330 333 750 750 750 500
+722 722 722 722 722 722 1000 722 667 667 667 667 389 389 389 389
+722 722 778 778 778 778 778 570 778 722 722 722 722 722 611 556
+500 500 500 500 500 500 722 444 444 444 444 444 278 278 278 278
+500 556 500 500 500 500 500 570 500 556 556 556 556 500 556 500
+]
+"""
+
     static func classic(content: String, trailerExtras: String = "",
                         font: String = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
                         extraFonts: String = "") -> Data {

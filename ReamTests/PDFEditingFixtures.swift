@@ -16,6 +16,7 @@ enum PDFEditingFixtures {
         [
             Fixture(name: "standard14-winansi", data: classic(contents: ["BT /F1 24 Tf 50 100 Td (Hello) Tj ET"]), oldText: "Hello", newText: "Helle"),
             simpleTrueTypeDifferences(),
+            type1DifferencesMinus(),
             Fixture(name: "tj-kerning", data: classic(contents: ["BT /F1 24 Tf 50 100 Td [(Hello) -80 ( World)] TJ ET"]), oldText: "Hello", newText: "Helle"),
             Fixture(name: "multiple-contents", data: classic(contents: ["q 1 0 0 1 0 0 cm", "BT /F1 24 Tf 50 100 Td (Hello) Tj ET Q"]), oldText: "Hello", newText: "Helle"),
             Fixture(name: "rotated", data: classic(contents: ["BT /F1 24 Tf 50 100 Td (Hello) Tj ET"], pageExtras: "/Rotate 90"), oldText: "Hello", newText: "Helle"),
@@ -68,6 +69,45 @@ enum PDFEditingFixtures {
         return Fixture(name: "truetype-differences", data: classicObjects(objects),
                        oldText: "Hello", newText: "Helle")
     }
+
+    /// A non-embedded standard-14 Times-Bold whose indirect /Encoding remaps
+    /// code 173 to /minus, mirroring font object 9 of
+    /// `/usr/share/doc/bash/article.pdf` (Ghostscript output) including its
+    /// 256-entry /Widths array. PDFKit extracts U+2212 there, so the shared
+    /// oracle pins the same decoding, the byte prefix, and the encoder's
+    /// round-trip of U+2212 back to code 173.
+    private static func type1DifferencesMinus() -> Fixture {
+        let content = Data("BT /F1 18 Tf 20 100 Td (Bash \\255 The GNU shell) Tj ET".utf8)
+        let objects: [Int: Data] = [
+            1: Data("<< /Type /Catalog /Pages 2 0 R >>".utf8),
+            2: Data("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".utf8),
+            3: Data("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".utf8),
+            4: Data("<</Subtype/Type1/BaseFont/Times-Bold/Type/Font/Name/R9/FirstChar 0/LastChar 255/Widths[\n\(articleTimesBoldWidths)]\n/Encoding 6 0 R>>".utf8),
+            5: stream(content),
+            6: Data("<</Type/Encoding/Differences[\n173/minus]>>".utf8)
+        ]
+        return Fixture(name: "type1-differences-minus", data: classicObjects(objects),
+                       oldText: "Bash \u{2212} The GNU shell", newText: "Bash \u{2212} the GNU shell")
+    }
+
+    private static let articleTimesBoldWidths = """
+581 520 556 667 389 444 722 1000 278 250 250 250 250 250 250 250
+250 250 250 250 250 250 250 250 250 250 250 250 250 250 250 250
+250 333 555 500 500 1000 833 333 333 333 500 570 250 333 250 278
+500 500 500 500 500 500 500 500 500 500 333 333 570 570 570 500
+930 722 667 722 722 667 611 778 778 389 500 778 667 944 722 778
+611 778 722 556 667 722 722 1000 722 722 667 333 278 333 333 500
+333 500 556 444 556 444 333 500 556 278 333 556 278 833 556 500
+556 556 444 389 333 556 500 722 500 500 444 394 220 394 333 250
+333 500 500 350 500 167 1000 500 500 500 1000 250 556 556 250 250
+278 250 333 333 333 333 333 333 333 500 500 722 278 500 1000 667
+250 333 500 500 500 500 220 500 333 747 300 333 570 570 747 333
+400 570 300 300 333 556 540 250 333 300 330 333 750 750 750 500
+722 722 722 722 722 722 1000 722 667 667 667 667 389 389 389 389
+722 722 778 778 778 778 778 570 778 722 722 722 722 722 611 556
+500 500 500 500 500 500 722 444 444 444 444 444 278 278 278 278
+500 556 500 500 500 500 500 570 500 556 556 556 556 500 556 500
+"""
 
     private static func classic(contents: [String],
                                 font: String = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
