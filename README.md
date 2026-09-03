@@ -18,9 +18,10 @@ API keys.
 > milestone of [`pdf-editor-scope.md`](pdf-editor-scope.md) has landed: the
 > viewer (tabs, content-aware dark mode, full-text search), annotations, page
 > management, compress-to-target-size, images↔PDF, the metadata editor, and
-> password add/remove. It is alpha software — expect rough edges — but it is no
-> longer just a viewer. True in-place text editing (the v1.0 flagship) has not
-> started.
+> password add/remove. Milestone A of true in-place text editing is also live:
+> supported text operands are changed through append-only PDF incremental
+> updates. It is alpha software — expect rough edges — but it is no longer just
+> a viewer.
 
 ## Screenshot
 
@@ -69,6 +70,22 @@ API keys.
   (date/name) stamps.
 - Annotation inspector, ⌃1–⌃5 colour swatches, **flatten** (all or selected),
   and **XFDF import/export** for round-tripping with other readers.
+
+**Editing**
+
+- **Edit Text (⌃⌘E)** from the toolbar, Edit menu, or ⌘K palette. Hover an
+  editable run, click it, type in place, press Return to commit or Esc to
+  cancel. The original font, start position, kerning operators and every
+  untouched source byte are preserved.
+- Text-only saves return the original file plus an append-only incremental
+  update verbatim. Repeated edits append further revisions, and Undo/Redo uses
+  byte snapshots. If annotations/page/metadata changes are mixed in, PDFKit
+  reserializes at save time (visual fidelity remains, byte stability does not).
+- Milestone A rejects encrypted PDFs and characters the existing font/subset
+  cannot encode, and explains why without applying a partial edit. Composite
+  fonts without a trustworthy Unicode map are not exposed as editable text.
+  Scanned or flattened pages correctly report that they have no editable text
+  layer.
 
 **Pages**
 
@@ -132,7 +149,7 @@ below tracks what is next.
 |----------|--------------------------|------------|
 | **v0.1** | _Better than Preview_ ✅  | Viewer (tabs, dark-content mode, search), annotations, page management (merge/split/reorder/rotate), compress with target-size, images↔PDF, metadata editor, password add/remove — plus the document shell, ⌘K palette and portable core they build on |
 | v0.5     | _Cancel iLovePDF_        | OCR (Vision), batch operations, watermarks/page numbers/headers, form filling, signature library, →Markdown / →text export, CLI, Quick Look extension |
-| v1.0     | _Cancel Acrobat_ 🎯       | **True in-place text/image editing**, form creation, true redaction, document compare, sanitize, bookmarks editor, Shortcuts |
+| v1.0     | _Cancel Acrobat_ 🎯       | **True in-place text editing Milestone A ✅**, then text fallback/layout controls, image editing, form creation, true redaction, document compare, sanitize, bookmarks editor, Shortcuts |
 | v1.5     | _The AI Update_          | BYO-key provider layer, chat-with-PDF (cited), summarize/explain/translate, semantic search, AI form-fill, table extraction |
 | v2.0     | _Power & Trust_          | Cryptographic signing + verification, multi-doc chat, data extraction pipelines, watch folders, plugin API |
 
@@ -142,8 +159,9 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the module map and the
 seams downstream features build against. In short:
 
 - **`Ream/`** — the SwiftUI/AppKit app (viewer, document model, command palette).
-- **`ReamCore/`** — a UI-free Swift package: the portable core the future CLI and
-  the v1.0 content-stream editing engine plug into.
+- **`ReamCore/`** — a UI-free Swift package containing the portable PDF object
+  model, content/text engine, and incremental-update writer used by the app and
+  future CLI.
 
 ## Contributing
 

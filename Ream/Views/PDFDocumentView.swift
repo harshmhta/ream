@@ -29,6 +29,7 @@ struct PDFDocumentView: View {
     @StateObject private var conversion = ConversionCoordinator()
     @StateObject private var palette = CommandPaletteService.shared
     @StateObject private var pageOps: PageOpsController
+    @StateObject private var textEditing: PDFTextEditingController
     @Environment(\.undoManager) private var undoManager
 
     /// This window's `PDFView` bridge. Owned by the window model (which also
@@ -56,6 +57,7 @@ struct PDFDocumentView: View {
         _model = StateObject(wrappedValue: DocumentWindowModel(document: document))
         _annotations = StateObject(wrappedValue: AnnotationController(document: document))
         _pageOps = StateObject(wrappedValue: PageOpsController(document: document))
+        _textEditing = StateObject(wrappedValue: PDFTextEditingController(document: document))
     }
 
     var body: some View {
@@ -100,6 +102,7 @@ struct PDFDocumentView: View {
         .focusedSceneValue(\.annotationController, annotations)
         .focusedSceneValue(\.conversionCoordinator, conversion)
         .focusedSceneValue(\.pageOps, pageOps)
+        .focusedSceneValue(\.pdfTextEditing, textEditing)
         .overlay { paletteOverlay }
         .overlay { progressOverlay }
         .animation(.easeInOut(duration: 0.12), value: palette.isPresented)
@@ -119,11 +122,15 @@ struct PDFDocumentView: View {
             ConversionCoordinator.active = conversion
             pageOps.coordinator = coordinator
             pageOps.undoManager = undoManager
+            textEditing.coordinator = coordinator
+            textEditing.undoManager = undoManager
+            textEditing.reportError = { actions.report($0) }
             ViewerCommands.register(for: model)
             registerDocumentPaletteCommands()
             pageOps.registerPaletteCommands()
             ConversionCommands.registerIfNeeded()
             AnnotationCommandRegistrar.setActive(annotations, showInspector: $showAnnotationInspector)
+            PDFTextEditingCommands.setActive(textEditing)
             SessionTracker.shared.register(document)
             promptForPasswordIfLocked()
         }
@@ -131,6 +138,7 @@ struct PDFDocumentView: View {
         // value can arrive/refresh after first appearance.
         .onChange(of: undoManager) { _, newValue in
             pageOps.undoManager = newValue
+            textEditing.undoManager = newValue
         }
         // Re-layout the on-screen view after in-place page mutations, and let
         // search drop text it extracted from the pre-mutation page list.
@@ -149,6 +157,7 @@ struct PDFDocumentView: View {
             ConversionCoordinator.active = conversion
             pageOps.registerPaletteCommands()
             AnnotationCommandRegistrar.setActive(annotations, showInspector: $showAnnotationInspector)
+            PDFTextEditingCommands.setActive(textEditing)
         }
         .onChange(of: model.requestSearchFocus) { _, wants in
             if wants {
@@ -161,6 +170,7 @@ struct PDFDocumentView: View {
             SessionTracker.shared.unregister(document)
             unregisterDocumentPaletteCommands()
             pageOps.unregisterPaletteCommands()
+            textEditing.deactivate()
         }
     }
 
@@ -211,6 +221,7 @@ struct PDFDocumentView: View {
                     document: document.pdfDocument,
                     coordinator: model.coordinator,
                     annotationController: annotations,
+                    textEditingController: textEditing,
                     initialState: model.initialReadingState,
                     onReadingStateChange: { model.scheduleReadingStateSave() }
                 )
@@ -238,6 +249,15 @@ struct PDFDocumentView: View {
                 Image(systemName: "sidebar.left")
             }
             .help("Toggle Sidebar")
+        }
+        ToolbarItem {
+            Button {
+                textEditing.toggle()
+            } label: {
+                Image(systemName: "character.cursor.ibeam")
+                    .foregroundStyle(textEditing.isActive ? Color.accentColor : Color.primary)
+            }
+            .help(textEditing.isActive ? "Stop Editing Text" : "Edit Text (⌃⌘E)")
         }
         ToolbarItem {
             Button {
