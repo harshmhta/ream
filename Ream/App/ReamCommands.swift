@@ -16,6 +16,7 @@ struct ReamCommands: Commands {
     @FocusedValue(\.documentActions) private var actions
     @FocusedValue(\.conversionCoordinator) private var conversion
     @FocusedValue(\.pageOps) private var pageOps
+    @FocusedValue(\.pdfTextEditing) private var textEditing
     @Environment(\.undoManager) private var undoManager
     @ObservedObject private var palette = CommandPaletteService.shared
 
@@ -120,6 +121,12 @@ struct ReamCommands: Commands {
 
         // Find menu (Edit-adjacent).
         CommandGroup(after: .textEditing) {
+            Divider()
+            Button(textEditing?.isActive == true ? "Stop Editing Text" : "Edit Text") {
+                textEditing?.toggle()
+            }
+            .keyboardShortcut("e", modifiers: [.command, .control])
+            .disabled(textEditing == nil || document?.isLocked == true)
             Divider()
             Button("Find…") { model?.focusSearch() }
                 .keyboardShortcut("f", modifiers: .command)

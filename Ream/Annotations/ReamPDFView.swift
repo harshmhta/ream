@@ -25,6 +25,8 @@ final class ReamPDFView: PDFView, NSMenuItemValidation {
     /// Set by the SwiftUI wrapper. All authoring routes through the controller
     /// so undo/inspector/save stay consistent.
     weak var annotationController: AnnotationController?
+    weak var textEditingController: PDFTextEditingController?
+    private var textTrackingArea: NSTrackingArea?
 
     // MARK: Clean copy (de-hyphenation)
 
@@ -67,8 +69,44 @@ final class ReamPDFView: PDFView, NSMenuItemValidation {
 
     // MARK: Event routing
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let textTrackingArea { removeTrackingArea(textTrackingArea) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
+                                  owner: self)
+        addTrackingArea(area)
+        textTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard let editor = textEditingController, editor.isActive else {
+            super.mouseMoved(with: event); return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        guard let page = page(for: point, nearest: false) else {
+            editor.updateHighlight(nil); return
+        }
+        editor.updateHighlight(editor.run(at: convert(point, to: page), on: page))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        textEditingController?.updateHighlight(nil)
+        super.mouseExited(with: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
-        guard let controller = annotationController else { super.mouseDown(with: event); return }
+        if let editor = textEditingController, editor.isActive {
+            let viewPoint = convert(event.locationInWindow, from: nil)
+            if let page = page(for: viewPoint, nearest: false),
+               let run = editor.run(at: convert(viewPoint, to: page), on: page) {
+                editor.beginInlineEdit(run, page: page, in: self)
+            } else {
+                editor.cancelInlineEdit()
+            }
+            return
+        }
+        guard annotationController != nil else { super.mouseDown(with: event); return }
         let viewPoint = convert(event.locationInWindow, from: nil)
         guard let page = page(for: viewPoint, nearest: true) else {
             super.mouseDown(with: event); return
@@ -103,6 +141,7 @@ final class ReamPDFView: PDFView, NSMenuItemValidation {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if textEditingController?.isActive == true { return }
         guard annotationController != nil else { super.mouseDragged(with: event); return }
         let viewPoint = convert(event.locationInWindow, from: nil)
 
@@ -128,6 +167,7 @@ final class ReamPDFView: PDFView, NSMenuItemValidation {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if textEditingController?.isActive == true { return }
         guard let controller = annotationController else { super.mouseUp(with: event); return }
 
         switch tool {
@@ -322,6 +362,22 @@ final class ReamPDFView: PDFView, NSMenuItemValidation {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        if let editor = textEditingController, editor.isActive,
+           let run = editor.highlightedRun,
+           let document, run.pageIndex >= 0, run.pageIndex < document.pageCount,
+           let page = document.page(at: run.pageIndex),
+           let context = NSGraphicsContext.current?.cgContext {
+            let rect = convert(CGRect(x: run.userSpaceBounds.x, y: run.userSpaceBounds.y,
+                                      width: run.userSpaceBounds.width,
+                                      height: run.userSpaceBounds.height), from: page)
+            context.saveGState()
+            context.setFillColor(NSColor.systemBlue.withAlphaComponent(0.18).cgColor)
+            context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.85).cgColor)
+            context.setLineWidth(1)
+            context.fill(rect)
+            context.stroke(rect.insetBy(dx: -1, dy: -1))
+            context.restoreGState()
+        }
         guard let page = dragPage, let context = NSGraphicsContext.current?.cgContext else { return }
         context.saveGState()
         let style = annotationController?.style ?? .init()

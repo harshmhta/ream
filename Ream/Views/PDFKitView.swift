@@ -14,6 +14,8 @@ struct PDFKitView: NSViewRepresentable {
     let coordinator: PDFViewCoordinator
     /// Annotation authoring controller. Optional so the viewer works without it.
     var annotationController: AnnotationController? = nil
+    /// In-place text editing interaction controller for this window.
+    var textEditingController: PDFTextEditingController? = nil
     /// Reading state to restore when the view first shows this document.
     let initialState: DocumentReadingState?
     /// Called (debounced) whenever the reading position changes, so the owner
@@ -39,6 +41,7 @@ struct PDFKitView: NSViewRepresentable {
         // Wire annotation authoring (routes through the controller for
         // undo/inspector/save consistency).
         view.annotationController = annotationController
+        view.textEditingController = textEditingController
         annotationController?.pdfView = view
 
         // Apply the saved layout mode, then restore the reading position once the
@@ -62,6 +65,7 @@ struct PDFKitView: NSViewRepresentable {
         }
         // Keep the coordinator + annotation controller pointed at the live view.
         nsView.annotationController = annotationController
+        nsView.textEditingController = textEditingController
         annotationController?.pdfView = nsView
         context.coordinator.parent = self
     }

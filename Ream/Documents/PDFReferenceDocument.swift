@@ -46,6 +46,13 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     /// plaintext". Held in memory only — see the type doc.
     @Published private(set) var encryptionSettings: EncryptionSettings?
 
+    /// Exact bytes loaded from disk and the latest ReamCore incremental update.
+    /// Keeping these separate from PDFKit is what makes untouched and text-only
+    /// saves byte stable.
+    private var originalData: Data?
+    @Published private(set) var textEditData: Data?
+    private(set) var pdfKitMutationsPending = false
+
     /// Whether content-aware dark inversion is on for this document. Mirrors the
     /// flag on ``InvertingPDFDocument`` and drives the View-menu checkmark.
     @Published var invertContent: Bool = false {
@@ -66,6 +73,7 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     /// Bump the mutation generation. Called by the page-ops extension after each
     /// structural edit so observers refresh.
     func bumpPageGeneration() {
+        pdfKitMutationsPending = true
         pageGeneration &+= 1
     }
 
@@ -78,6 +86,17 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         let doc = InvertingPDFDocument()
         doc.delegate = AnnotationDocumentDelegate.shared
         self.pdfDocument = doc
+    }
+
+    /// Internal data initializer used by non-SwiftUI callers and fidelity tests.
+    /// The document-group initializer below follows the same exact-byte path.
+    init(data: Data) throws {
+        guard let doc = InvertingPDFDocument(data: data) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        doc.delegate = AnnotationDocumentDelegate.shared
+        self.pdfDocument = doc
+        self.originalData = data
     }
 
     init(configuration: ReadConfiguration) throws {
@@ -95,6 +114,7 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         // installing it here (pre-display) is early enough.
         doc.delegate = AnnotationDocumentDelegate.shared
         self.pdfDocument = doc
+        self.originalData = data
     }
 
     /// Notify SwiftUI + the document architecture that annotations mutated in
@@ -102,6 +122,7 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     /// edits (adding/removing annotations) don't touch a `@Published` property,
     /// so the change publisher has to be fired manually.
     func annotationsDidChange() {
+        pdfKitMutationsPending = true
         objectWillChange.send()
     }
 
@@ -122,10 +143,64 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         if let settings = encryptionSettings, settings.hasAnyPassword {
             return try PDFSecurityService.encryptedData(from: pdfDocument, settings: settings)
         }
+        if !pdfKitMutationsPending {
+            if let textEditData { return textEditData }
+            if let originalData { return originalData }
+        }
         guard let data = pdfDocument.dataRepresentation() else {
             throw CocoaError(.fileWriteUnknown)
         }
         return data
+    }
+
+    /// Bytes the portable editor should parse next. A text-only session uses the
+    /// exact original/update chain. If PDFKit mutations are already pending, a
+    /// one-time PDFKit serialization carries them into the editor; saves are no
+    /// longer byte-stable after that mix, but remain visually faithful.
+    func dataForTextEditing() throws -> Data {
+        if !pdfKitMutationsPending {
+            if let textEditData { return textEditData }
+            if let originalData { return originalData }
+        }
+        guard let data = pdfDocument.dataRepresentation() else { throw CocoaError(.fileWriteUnknown) }
+        return data
+    }
+
+    /// Install bytes returned by `PDFTextEditor`, preserving the complete
+    /// reader state through the caller's coordinator and registering byte-level
+    /// undo/redo snapshots.
+    func applyTextEditData(_ data: Data, undoManager: UndoManager?) throws {
+        guard let replacement = InvertingPDFDocument(data: data) else { throw CocoaError(.fileReadCorruptFile) }
+        let previousDocument = pdfDocument
+        let previousBytes = textEditData
+        let previousPending = pdfKitMutationsPending
+        undoManager?.registerUndo(withTarget: self) { document in
+            document.restoreTextEdit(document: previousDocument, bytes: previousBytes,
+                                     pdfKitMutationsPending: previousPending,
+                                     undoManager: undoManager)
+        }
+        undoManager?.setActionName("Edit PDF Text")
+        objectWillChange.send()
+        textEditData = data
+        pdfDocument = replacement
+    }
+
+    private func restoreTextEdit(document replacement: PDFKit.PDFDocument,
+                                 bytes: Data?, pdfKitMutationsPending: Bool,
+                                 undoManager: UndoManager?) {
+        let currentDocument = pdfDocument
+        let currentBytes = textEditData
+        let currentPending = self.pdfKitMutationsPending
+        undoManager?.registerUndo(withTarget: self) { document in
+            document.restoreTextEdit(document: currentDocument, bytes: currentBytes,
+                                     pdfKitMutationsPending: currentPending,
+                                     undoManager: undoManager)
+        }
+        undoManager?.setActionName("Edit PDF Text")
+        objectWillChange.send()
+        textEditData = bytes
+        self.pdfKitMutationsPending = pdfKitMutationsPending
+        pdfDocument = replacement
     }
 
     func fileWrapper(snapshot: Data, configuration: WriteConfiguration) throws -> FileWrapper {
@@ -157,6 +232,7 @@ final class PDFReferenceDocument: ReferenceFileDocument {
     func updateMetadata(_ metadata: DocumentMetadata, undoManager: UndoManager?) {
         let previous = PDFMetadataService.read(from: pdfDocument)
         registerUndo(undoManager, previousMetadata: previous)
+        pdfKitMutationsPending = true
         objectWillChange.send()
         PDFMetadataService.apply(metadata, to: pdfDocument)
     }
@@ -184,6 +260,7 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         undoManager?.setActionName("Strip All Metadata")
 
         objectWillChange.send()
+        pdfKitMutationsPending = true
         pdfDocument = stripped
     }
 
@@ -197,6 +274,7 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         }
         undoManager?.setActionName("Encrypt Document")
         objectWillChange.send()
+        pdfKitMutationsPending = true
         encryptionSettings = (settings?.hasAnyPassword ?? false) ? settings?.normalized : nil
     }
 
@@ -225,6 +303,7 @@ final class PDFReferenceDocument: ReferenceFileDocument {
         undoManager?.setActionName("Remove Password")
 
         objectWillChange.send()
+        pdfKitMutationsPending = true
         encryptionSettings = nil
         if pdfDocument.isEncrypted {
             pdfDocument = try PDFSecurityService.decryptedDocument(from: pdfDocument)

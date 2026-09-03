@@ -194,6 +194,15 @@ final class PDFViewCoordinator: ObservableObject {
         if let destination { pdfView.go(to: destination) }
     }
 
+    /// Install a byte-edited replacement document and restore the exact page,
+    /// destination, zoom and display mode captured before the swap.
+    func install(_ document: PDFKit.PDFDocument, preserving state: DocumentReadingState?) {
+        pdfView.document = document
+        syncViewMode()
+        pdfView.layoutDocumentView()
+        if let state { applyReadingState(state) }
+    }
+
     /// Rebuild PDFKit's page layout after a structural page edit
     /// (insert/remove/reorder/rotate), which PDFKit does not always do on its
     /// own when the document mutates underneath it.

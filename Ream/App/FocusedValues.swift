@@ -33,6 +33,10 @@ private struct PageOpsControllerKey: FocusedValueKey {
     typealias Value = PageOpsController
 }
 
+private struct PDFTextEditingControllerKey: FocusedValueKey {
+    typealias Value = PDFTextEditingController
+}
+
 extension FocusedValues {
     var documentModel: DocumentWindowModel? {
         get { self[DocumentModelKey.self] }
@@ -61,6 +65,12 @@ extension FocusedValues {
     var pageOps: PageOpsController? {
         get { self[PageOpsControllerKey.self] }
         set { self[PageOpsControllerKey.self] = newValue }
+    }
+
+    /// The focused window's in-place text-editing tool.
+    var pdfTextEditing: PDFTextEditingController? {
+        get { self[PDFTextEditingControllerKey.self] }
+        set { self[PDFTextEditingControllerKey.self] = newValue }
     }
 }
 
