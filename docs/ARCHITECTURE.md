@@ -41,7 +41,9 @@ convert/export, metadata + security); each phase in the
 │                  PDFPageRasterizer · ImageEncoding                │
 │    TextReflow · PlainTextSearch · DocumentMetadata                │
 │    DocumentPermissions · PDFDescriptor (model seam)               │
-│    → seam for the CLI (`pdfx`) and the v1.0 editing engine        │
+│    PDFObjectModel/  syntax objects · xrefs · filters · recovery    │
+│    TextEditing/     page tree · CMaps/fonts · text layout · writer │
+│    → shared engine seam for Ream and the future CLI (`pdfx`)      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -85,6 +87,8 @@ today:
 | `Conversion/` | `CompressionEngine` (quality presets, manual downsampling, and a binary search over resolution × quality to hit a **target file size**), `ImagesToPDFConverter`, `PDFToImagesExporter`, `PDFBuilder`, `PDFPageRasterizer`, `ImageEncoding` (PNG/JPEG/TIFF), `ZipWriter`. |
 | Text | `TextReflow` (line-break de-hyphenation + paragraph joining for copy), `PlainTextSearch` (match ranges + windowed previews, with case / whole-word / regex options). |
 | Models | `DocumentMetadata`, `DocumentPermissions`, `PDFDescriptor`. |
+| `PDFObjectModel/` | Complete PDF syntax values and lexer/parser; classic xref tables, xref streams and hybrid sections; object streams; `/Prev` revision chains; broken-xref object scanning; Flate, ASCIIHex, ASCII85, LZW and RunLength decoding plus TIFF/PNG predictors. |
+| `TextEditing/` | Inherited page-tree attributes and content streams; byte-range-preserving content tokenization (including inline images); text/graphics state, fonts, CMaps and glyph boxes; encodability validation; same-style incremental-update writing through `PDFTextEditor`. |
 
 Everything here is headless-testable, and the package has its **own test target**
 that the app scheme does not include — `xcodebuild test` and ⌘U do not run it.
@@ -229,11 +233,42 @@ Related: **dark content is render-only**. Inversion lives in `PDFPage.draw`, so
 any operation that *rasterizes* a page (flatten, thumbnails, export-as-image)
 must disable it for the duration or it gets baked into the output.
 
-### 6. The editing engine — `ReamCore`
+### 6. The editing engine — `PDFTextEditor` + `PDFTextEditingController`
 
-The v1.0 flagship (true in-place editing) lands as new types in `ReamCore`,
-consumed by the app through models like `PDFDescriptor`. Keep engine work
-UI-free so it stays portable and testable via the fidelity regression suite.
+`ReamCore.PDFTextEditor` is the byte-level contract. `open(data:)` parses the
+latest revision, follows the page tree and exposes independently editable
+`PDFTextRun` operands. `replaceText(of:with:)` validates the complete replacement
+against the original font before producing output. It copies the decoded content
+stream verbatim except for that one string token, appends a replacement stream
+and page dictionary, then emits an incremental xref section in the original
+style (table or stream). Original bytes are never rewritten; sequential edits
+append sequential revisions.
+
+The engine uses Foundation plus the platform zlib module and imports no UI or
+rendering framework. `PDFTextRun` carries both raw PDF user-space bounds (for
+`PDFView.convert`) and crop/rotation-normalized display bounds, as well as exact
+operand/operator byte ranges. Fonts cover simple Type1/TrueType/Type3 encodings,
+Differences/glyph names, Type0 Identity and embedded CMaps, ToUnicode bf/cid
+maps, simple/CID widths, standard-14 metrics, and embedded sfnt `cmap` checks.
+
+The app's per-window `PDFTextEditingController` is intentionally thin: it owns
+tool state, hover/click hit-testing, the inline `NSTextField`, readable failures,
+and UndoManager byte snapshots. The toolbar, Edit menu and command palette all
+reach it through a focused value. A commit replaces the displayed PDFKit
+document from the returned bytes and restores page, destination, zoom and view
+mode.
+
+`PDFReferenceDocument` retains its exact input bytes and latest text-edit bytes.
+An untouched or text-only `snapshot(contentType:)` returns those bytes verbatim.
+Calling any PDFKit-level mutation flips `pdfKitMutationsPending`; mixed saves then
+use PDFKit serialization so the content edit is retained but byte stability is
+explicitly no longer promised.
+
+Milestone A has deliberate hard stops: encrypted inputs are rejected; edits do
+not reflow or move neighboring runs; only glyphs already representable by the
+font/subset are accepted; scanned/image-only pages have no runs. Font
+substitution, encryption of appended objects, optional line shifting, and the
+whiteout/retype fallback belong to Milestone B.
 
 ## Build & signing model
 
